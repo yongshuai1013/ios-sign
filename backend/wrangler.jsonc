@@ -1,0 +1,16 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "sideimpactor-backend",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-09-15",
+  "assets": {
+    "binding": "ASSETS",
+    "directory": "../app/dist",
+    "not_found_handling": "single-page-application"
+  },
+  // Optional: hard-code a SHA-256 hex access token hash here, or prefer
+  // `wrangler secret put ACCESS_PASSWORD` / `ACCESS_TOKEN_HASH` instead.
+  // "vars": {
+  //   "ACCESS_TOKEN_HASH": "<sha256 hex of your token>"
+  // }
+}
