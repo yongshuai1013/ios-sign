@@ -1,0 +1,22 @@
+{
+  "name": "sideimpactor",
+  "version": "0.1.0",
+  "description": "SideImpactor reimplementation in TypeScript: pure-frontend IPA signing + idevice pairing file support",
+  "type": "module",
+  "scripts": {
+    "build": "tsc --noEmit",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@noble/curves": "^2.0.0",
+    "@noble/ciphers": "^2.0.0",
+    "@noble/hashes": "^2.0.0",
+    "plist": "^3.1.0",
+    "uuid": "^11.0.0"
+  },
+  "devDependencies": {
+    "@types/plist": "^3.0.5",
+    "@types/uuid": "^10.0.0",
+    "typescript": "^5.6.0"
+  }
+}
