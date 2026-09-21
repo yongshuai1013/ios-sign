@@ -1,0 +1,23 @@
+{
+  "dependencies": {
+    "@mercuryworkshop/wisp-js": "^0.5.0"
+  },
+  "description": "Cloudflare Worker backend for SideImpactor: WISP-over-WebSocket TCP proxy restricted to Apple servers",
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20250918.0",
+    "typescript": "^5.6.0",
+    "wrangler": "^4.0.0"
+  },
+  "name": "sideimpactor-backend",
+  "private": true,
+  "scripts": {
+    "build": "tsc --noEmit",
+    "cf-typegen": "wrangler types",
+    "deploy": "wrangler deploy",
+    "dev": "wrangler dev",
+    "test": "bun test",
+    "postinstall": "node scripts/patch-wisp-js.mjs"
+  },
+  "type": "module",
+  "version": "0.1.0"
+}
