@@ -767,7 +767,7 @@ export class WebUsbMux {
    * device reports version >= 2 — switches to 16-byte headers and sends SETUP.
    * Returns the negotiated version.
    */
-  async handshake(timeoutMs = 4000): Promise<number> {
+  async handshake(timeoutMs = 4000, maxAttempts = 3): Promise<number> {
     if (this.handshakeDone) {
       return this.muxVersion;
     }
@@ -778,42 +778,58 @@ export class WebUsbMux {
     const payload = new Uint8Array(12);
     dataViewOf(payload).setUint32(0, 2, false); // request MUX v2 (minor/pad = 0)
 
-    let resolve!: (version: number) => void;
-    let reject!: (err: Error) => void;
-    const promise = new Promise<number>((res, rej) => {
-      resolve = res;
-      reject = rej;
-    });
-    const timer = setTimeout(() => {
-      this.versionWaiter = null;
-      reject(new Error(`MUX version timeout after ${timeoutMs}ms`));
-    }, timeoutMs);
-    this.versionWaiter = {
-      resolve: (version: number) => {
-        clearTimeout(timer);
-        resolve(version);
-      },
-      reject: (err: Error) => {
-        clearTimeout(timer);
-        reject(err);
-      },
-    };
+    let lastError: Error | null = null;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      let resolve!: (version: number) => void;
+      let reject!: (err: Error) => void;
+      const promise = new Promise<number>((res, rej) => {
+        resolve = res;
+        reject = rej;
+      });
+      const timer = setTimeout(() => {
+        this.versionWaiter = null;
+        reject(new Error(`MUX version timeout after ${timeoutMs}ms`));
+      }, timeoutMs);
+      this.versionWaiter = {
+        resolve: (version: number) => {
+          clearTimeout(timer);
+          resolve(version);
+        },
+        reject: (err: Error) => {
+          clearTimeout(timer);
+          reject(err);
+        },
+      };
 
-    try {
-      // muxVersion is still 0 here, so this goes out with a legacy 8-byte header.
-      await this.sendMuxPacket(MUX_PROTO_VERSION, payload);
-      const version = await promise;
-      if (version >= 2) {
-        // Switch to 16-byte headers; SETUP resets the sequence numbers.
-        await this.sendMuxPacket(MUX_PROTO_SETUP, new Uint8Array([0x07]), { resetSeq: true });
+      try {
+        // muxVersion is still 0 here, so this goes out with a legacy 8-byte header.
+        // A transport-level send failure means the device is gone: don't retry.
+        try {
+          await this.sendMuxPacket(MUX_PROTO_VERSION, payload);
+        } catch (err) {
+          clearTimeout(timer);
+          this.versionWaiter = null;
+          throw err;
+        }
+        const version = await promise;
+        if (version >= 2) {
+          // Switch to 16-byte headers; SETUP resets the sequence numbers.
+          await this.sendMuxPacket(MUX_PROTO_SETUP, new Uint8Array([0x07]), { resetSeq: true });
+        }
+        this.handshakeDone = true;
+        this.log(`MUX handshake complete (version=${version}).`);
+        return version;
+      } catch (err) {
+        lastError = err instanceof Error ? err : new Error(String(err));
+        if (attempt < maxAttempts) {
+          this.log(`MUX handshake attempt ${attempt}/${maxAttempts} failed (${lastError.message}), retrying...`);
+        }
+      } finally {
+        clearTimeout(timer);
+        this.versionWaiter = null;
       }
-      this.handshakeDone = true;
-      this.log(`MUX handshake complete (version=${version}).`);
-      return version;
-    } finally {
-      clearTimeout(timer);
-      this.versionWaiter = null;
     }
+    throw lastError ?? new Error(`MUX version timeout after ${timeoutMs}ms`);
   }
 
   /**
@@ -830,7 +846,7 @@ export class WebUsbMux {
     }
     const timeoutMs = options.timeoutMs ?? 5000;
     const retryBaseMs = options.retryBaseMs ?? 900;
-    const maxAttempts = options.maxAttempts ?? (port === LOCKDOWN_PORT ? 1 : 6);
+    const maxAttempts = options.maxAttempts ?? (port === LOCKDOWN_PORT ? 3 : 6);
     let lastError: Error | null = null;
 
     for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
@@ -899,6 +915,14 @@ export class WebUsbMux {
     this.versionWaiter?.reject(new Error('WebUSB MUX closed'));
     this.versionWaiter = null;
     this.packetChain = Promise.resolve();
+    // Reset MUX session state: the device returns to legacy mode after the
+    // USB connection drops, so a reused object must not keep the old v2
+    // decoding (which causes "Unexpected MUX magic" on stale data).
+    this.muxVersion = 0;
+    this.handshakeDone = false;
+    this.readBuffer = EMPTY;
+    this.muxTxSeq = 0;
+    this.muxRxSeq = 0xffff;
     try {
       if (this.device.opened) {
         if (this.interfaceNumber >= 0) {
@@ -1027,8 +1051,20 @@ export class WebUsbMux {
   }
 
   private async handleMuxPacket(packet: Uint8Array): Promise<void> {
-    const v2 = this.muxVersion >= 2;
-    const header = decodeMuxHeader(packet, this.muxVersion);
+    // The VERSION request/response is always v1 format (8-byte header), even
+    // if we've already switched to v2. A stale VERSION response arriving after
+    // a handshake retry must not be decoded as v2 (which would misinterpret
+    // the version number as magic). Peek at the protocol field first (u32 at
+    // offset 0, same in both versions) to decide the decode mode.
+    let protocol = 0;
+    if (packet.byteLength >= 4) {
+      protocol = dataViewOf(packet).getUint32(0, false);
+    }
+    const isVersionPacket = protocol === MUX_PROTO_VERSION;
+    // Force v1 decode for VERSION packets; otherwise use current version.
+    const decodeVersion = isVersionPacket ? 1 : this.muxVersion;
+    const v2 = decodeVersion >= 2;
+    const header = decodeMuxHeader(packet, decodeVersion);
     if (v2) {
       if (header.magic !== MUX_MAGIC_HOST && header.magic !== MUX_MAGIC_DEVICE_ALT) {
         this.log(`Unexpected MUX magic: 0x${header.magic.toString(16)}.`);

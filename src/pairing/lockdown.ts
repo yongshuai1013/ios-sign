@@ -245,6 +245,7 @@ export class LockdownClient {
   async pair(
     pairRecord: LockdownPairRecord,
     buid: string,
+    hostName?: string,
   ): Promise<{ success: boolean; escrowBag?: Uint8Array }> {
     const dict = pairRecordToDict(pairRecord);
     dict['SystemBUID'] = buid && buid.length > 0 ? buid : pairRecord.systemBuid;
@@ -254,6 +255,8 @@ export class LockdownClient {
       PairRecord: dict,
       ProtocolVersion: '2',
       PairingOptions: { ExtendedPairingErrors: true },
+      // Mirrors idevice/idevice_pair: optional host label in the Pair request.
+      ...(hostName ? { HostName: hostName } : {}),
     });
     const res = await this.socket.recvPlist();
     const err = errorFromResponse(res);
@@ -380,11 +383,16 @@ export interface PairDeviceOptions {
  * On success, `HostPrivateKey` and the device's `EscrowBag` (when sent)
  * are merged into the returned {@link LockdownPairRecord}.
  *
+ * Note: certificate/key fields are stored as PEM bytes (matching `idevice`'s
+ * `CaReturn` and the on-disk `{UDID}.plist` format). Callers that need DER
+ * (e.g. the TLS client) must convert via `pemToDer` themselves.
+ *
  * Note: this does NOT store the record in usbmuxd's cache — that is the
  * caller's job (e.g. `UsbmuxdClient.savePairRecord`, or
  * `PairingFile.fromValue(pairRecordToDict(record))` for the on-disk
  * `{UDID}.plist` format).
  */
+
 export async function pairDevice(
   client: LockdownClient,
   devicePublicKey: Uint8Array,
@@ -396,6 +404,8 @@ export async function pairDevice(
 ): Promise<LockdownPairRecord> {
   const certs = await ca.generateCertificates(copyBytes(devicePublicKey));
 
+  // generateCertificates returns PEM bytes; store as-is (PEM is the
+  // on-disk PairRecord format and what lockdownd expects in the Pair request).
   const record: LockdownPairRecord = {
     hostId,
     systemBuid: systemBUID,
@@ -417,7 +427,7 @@ export async function pairDevice(
       throw new LockdownError('Aborted', 'pairing aborted by caller');
     }
     try {
-      const res = await client.pair(record, systemBUID);
+      const res = await client.pair(record, systemBUID, opts.hostName);
       if (res.escrowBag) record.escrowBag = res.escrowBag;
       return record;
     } catch (e) {

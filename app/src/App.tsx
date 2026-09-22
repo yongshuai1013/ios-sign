@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { WebUsbMuxClient } from './transport/webusb-mux';
 import type { AnisetteData } from './anisette-service';
 import type { AppleDeveloperContext, TwoFactorContext } from './apple-signing';
+import { revokeCachedCertificate } from './apple-signing';
 
 import { Header, type AppPage } from './components/Header';
 import { LoginPage } from './components/LoginPage';
@@ -452,6 +453,13 @@ export function App() {
         file: result.signedFile,
         sourceKey: buildPreparedSourceKey(selectedIpaFile, targetUdid),
       });
+      // 簽名完成後清除設備連接狀態，強制用戶重新連接。
+      // 簽名耗時較長（20-30 秒），期間 USB 可能已斷開；若保留舊的
+      // pairedDeviceInfo，安裝按鈕會顯示為可用（黑色），但實際點安裝
+      // 時會因 USB 已斷而失敗。清除後按鈕變灰，用戶按「連接設備」
+      // 重新連接後才會變黑，確保安裝時的 USB 是活的。
+      setPairedDeviceInfo(null);
+      addLog('sign: done. Please reconnect the device, then tap Install.');
       setProgress({ percent: 100, status: 'complete' });
     } catch (error) {
       addLog(`sign failed: ${formatError(error)}`);
@@ -460,6 +468,22 @@ export function App() {
       setBusy((prev) => ({ ...prev, sign: false }));
     }
   }, [addLog, anisetteData, loginContext, pairedDeviceInfo, selectedIpaFile, selectedTargetUdid]);
+
+  // ---- revoke certificate ----
+  const handleRevokeCert = useCallback(async () => {
+    if (busyRef.current.sign) return;
+    if (!loginContext) return;
+    if (!window.confirm('撤銷目前的開發憑證？下次簽名會建立一張新的。')) return;
+    setBusy((prev) => ({ ...prev, sign: true }));
+    try {
+      await revokeCachedCertificate(loginContext, addLog);
+      addLog('revoke: certificate revoked, please sign again to create a fresh one');
+    } catch (error) {
+      addLog(`revoke failed: ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      setBusy((prev) => ({ ...prev, sign: false }));
+    }
+  }, [addLog, loginContext]);
 
   // ---- install flow ----
   const handleInstall = useCallback(async () => {
@@ -473,12 +497,28 @@ export function App() {
     lastInstallPercentRef.current = 0;
 
     try {
+      // isideload architecture: the device connection is established FRESH for
+      // install, never reused across the long signing step. Discard any stale
+      // client from pairing/signing to avoid using a dead MUX session.
+      if (directClientRef.current) {
+        try { directClientRef.current.close(); } catch { /* ignore */ }
+        directClientRef.current = null;
+      }
       const client = await ensureClientSelected({
         log: addLog,
         clientRef: directClientRef,
         onStateChange: () => {},
         onTrustPending: () => setTrustState('pending'),
       });
+      // Establish a fresh MUX connection (picker-less reconnect to the
+      // already-authorized device). If the device was unplugged, this throws
+      // and the pair flow below will prompt.
+      try {
+        addLog('install: establishing fresh device connection...');
+        await client.reconnect();
+      } catch (reconnectError) {
+        addLog(`install: fresh connect failed (${reconnectError instanceof Error ? reconnectError.message : String(reconnectError)}), trying pair flow...`);
+      }
       let currentDeviceUdid = pairedDeviceInfo?.udid ?? null;
       if (!client.isSessionStarted) {
         const pairResult = await runPairFlow({
@@ -505,7 +545,38 @@ export function App() {
         throw new Error('please sign ipa first, then install');
       }
 
-      await installFlow({ client, targetUdid, signedFile: prepared.file, log: addLog });
+      try {
+        await installFlow({ client, targetUdid, signedFile: prepared.file, log: addLog });
+      } catch (firstError) {
+        const msg = firstError instanceof Error ? firstError.message : String(firstError);
+        // TLS handshake often fails on the first attempt after a long signing
+        // step (iPhone doesn't respond in time). Retry once with a fresh client
+        // before asking the user to replug.
+        if (msg.includes('USB connection lost') || msg.includes('transfer') || msg.includes('not connected') || msg.includes('timeout')) {
+          addLog(`install: connection hiccup (${msg}), retrying once...`);
+          // First try a clean reconnect on the existing client (no device
+          // picker needed). If that fails, fall back to a brand new client
+          // which will prompt for device selection.
+          try {
+            await client.reconnect();
+            addLog('install: reconnected, retrying install...');
+            await installFlow({ client, targetUdid, signedFile: prepared.file, log: addLog });
+          } catch (reconnectError) {
+            addLog('install: reconnect failed, trying fresh client...');
+            // Drop the stale client so ensureClientSelected creates a fresh one.
+            directClientRef.current = null;
+            const retryClient = await ensureClientSelected({
+              log: addLog,
+              clientRef: directClientRef,
+              onStateChange: () => {},
+              onTrustPending: () => setTrustState('pending'),
+            });
+            await installFlow({ client: retryClient, targetUdid, signedFile: prepared.file, log: addLog });
+          }
+        } else {
+          throw firstError;
+        }
+      }
       setProgress({ percent: 100, status: 'complete' });
     } catch (error) {
       addLog(`install failed: ${formatError(error)}`);
@@ -647,6 +718,7 @@ export function App() {
             onSign={handleSign}
             signBusy={busy.sign}
             signDisabled={signDisabled}
+            onRevokeCert={handleRevokeCert}
             onInstall={handleInstall}
             installBusy={busy.install}
             installDisabled={installDisabled}

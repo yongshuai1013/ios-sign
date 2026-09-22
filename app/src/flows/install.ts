@@ -50,6 +50,14 @@ export async function installFlow(req: InstallRequest): Promise<void> {
   if (!req.client.isTlsUpgraded) {
     req.log('install: upgrading lockdownd to TLS…');
     try {
+      // Ensure lockdownd is connected and session is started before TLS upgrade.
+      // (A fresh client from retry logic may not have connected yet.)
+      if (!req.client.isSessionStarted) {
+        req.log('install: connecting to lockdownd...');
+        await req.client.connectLockdown();
+        req.log('install: starting session...');
+        await req.client.startSession(record.hostId, record.systemBuid);
+      }
       await req.client.upgradeToTls(record);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);

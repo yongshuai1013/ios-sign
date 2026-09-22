@@ -223,6 +223,7 @@ export class WebUsbMuxClient {
     this.cb.log('pair: generating certificates, requesting Pair...');
     const record = await pairDevice(lockdown, devicePublicKey, wifiMac, hostId, systemBuid, undefined, {
       maxAttempts: 1,
+      hostName: 'sideimpactor',
       onTrustPending: () => this.cb.onTrustPending?.(),
     });
 
@@ -363,5 +364,8 @@ function toPairingFile(
   // on-disk file must include it.
   dict['HostPrivateKey'] = record.hostPrivateKey.slice();
   dict['UDID'] = udid;
+  // Keep the EscrowBag when the device sent one (matches idevice's
+  // PairingFile; used by backup tooling).
+  if (record.escrowBag) dict['EscrowBag'] = record.escrowBag.slice();
   return PairingFile.fromValue(dict);
 }

@@ -24,6 +24,8 @@ import {
 } from 'altsign.js';
 import { unzipSync, zipSync } from 'fflate';
 import { parsePlist, plistString, type PlistValue } from './lib/plist';
+import { build as buildPlist } from 'plist';
+import * as forge from 'node-forge';
 import { sanitizeFilename } from './lib/filenames';
 import type { AnisetteData } from './anisette-service';
 import { getAnisetteData } from './anisette-service';
@@ -341,33 +343,253 @@ export async function refreshAppleDeveloperContext(
   };
 }
 
+/**
+ * Revokes the cached development certificate for the given Apple ID/team,
+ * both on the portal and in the local cache. The next sign will create a
+ * fresh certificate with a new machineId (used as the P12 password).
+ */
+export async function revokeCachedCertificate(
+  context: AppleDeveloperContext,
+  log?: (message: string) => void,
+): Promise<void> {
+  const api = getApi(log);
+  const freshAnisette = await getAnisetteData(log);
+  const session = toSession({
+    ...context,
+    session: { ...context.session, anisetteData: freshAnisette },
+  });
+  const team = toAltTeam(context);
+  const certificates = await api.fetchCertificates(session, team);
+  const cacheKey = certCacheKey(context.appleId, context.team.identifier);
+  const cache = readCertCache()[cacheKey];
+  const target = cache
+    ? certificates.find((c) => String(c.identifier) === cache.certId)
+    : certificates.find((c) => c.machineName === 'SideImpactor Web');
+  if (!target) {
+    log?.('revoke: no certificate found to revoke');
+    return;
+  }
+  log?.(`revoke: revoking certificate ${target.identifier}...`);
+  await api.revokeCertificate(session, team, target);
+  const map = readCertCache();
+  delete map[cacheKey];
+  saveText(CERT_KEY_STORAGE_KEY, JSON.stringify(map));
+  log?.('revoke: done, next sign will create a fresh certificate');
+}
+
 interface IpaInfo {
   bundleId: string;
   bundleName: string;
   bundleVersion: string;
 }
 
-function stripAppExtensions(ipaBytes: Uint8Array, log: (m: string) => void): Uint8Array {
+/**
+ * Provisions App Extensions (.appex) by registering dedicated App IDs,
+ * downloading provisioning profiles, and embedding them into each .appex.
+ * Returns the repacked IPA bytes. If no .appex is found, returns the input unchanged.
+ */
+async function embedExtensionProfiles(
+  ipaBytes: Uint8Array,
+  api: AppleAPI,
+  session: AppleAPISession,
+  team: AltTeam,
+  originalBundleId: string,
+  outputBundleId: string,
+  log: (m: string) => void,
+): Promise<Uint8Array> {
   const entries = unzipSync(ipaBytes);
   const names = Object.keys(entries);
-  // Match Payload/<App>.app/PlugIns/<Name>.appex/... (case-insensitive).
-  const appexPrefix = names.find((n) => /\/PlugIns\/[^/]+\.appex\//i.test(n))
-    ?.match(/^(.+\/PlugIns\/[^/]+\.appex\/)/i)?.[1];
-  if (!appexPrefix) {
-    return ipaBytes; // No app extensions; nothing to strip.
+  // Find all .appex bundles: Payload/<App>.app/PlugIns/<Name>.appex/
+  const appexBundles = new Set<string>();
+  for (const n of names) {
+    const m = n.match(/^(.+\/PlugIns\/[^/]+\.appex)\//i);
+    if (m) appexBundles.add(m[1]);
   }
-  const pluginsDir = appexPrefix.replace(/[^/]+\.appex\/$/i, '');
-  let removed = 0;
-  for (const name of names) {
-    if (name.toLowerCase().startsWith(pluginsDir.toLowerCase())) {
-      delete entries[name];
-      removed++;
+  if (appexBundles.size === 0) {
+    return ipaBytes;
+  }
+
+  log(`sign: provisioning ${appexBundles.size} app extension(s)...`);
+  const appIds = await api.fetchAppIDs(session, team);
+
+  for (const appexPath of appexBundles) {
+    const infoPlistPath = `${appexPath}/Info.plist`;
+    const infoRaw = entries[infoPlistPath];
+    if (!infoRaw) {
+      log(`sign: warning: ${appexPath} has no Info.plist, skipping`);
+      continue;
+    }
+    const info = parsePlist(infoRaw) as { [k: string]: PlistValue };
+    const origExtId = plistString(info, 'CFBundleIdentifier');
+    if (!origExtId) {
+      log(`sign: warning: ${appexPath} has no CFBundleIdentifier, skipping`);
+      continue;
+    }
+    // Map extension bundle ID: replace the original host prefix with the new output ID.
+    // e.g. com.SideStore.SideStore.AltWidget -> com.SideStore.SideStore.<TEAM>.AltWidget
+    let newExtId: string;
+    if (origExtId.startsWith(originalBundleId + '.')) {
+      newExtId = outputBundleId + origExtId.slice(originalBundleId.length);
+    } else {
+      const lastPart = origExtId.split('.').pop() ?? 'Extension';
+      newExtId = `${outputBundleId}.${lastPart}`;
+    }
+    log(`sign: extension ${origExtId} -> ${newExtId}`);
+
+    let extAppId = appIds.find((a) => a.bundleIdentifier === newExtId);
+    if (!extAppId) {
+      log(`sign: creating App ID for extension...`);
+      const displayName = plistString(info, 'CFBundleDisplayName') || plistString(info, 'CFBundleName') || 'Extension';
+      extAppId = await api.addAppID(session, team, displayName, newExtId);
+      appIds.push(extAppId);
+    }
+    const extProfile = await api.fetchProvisioningProfile(session, team, extAppId);
+    // Embed the profile into the .appex.
+    entries[`${appexPath}/embedded.mobileprovision`] = new Uint8Array(extProfile.data);
+    // Update the extension's Info.plist with the new bundle ID.
+    info['CFBundleIdentifier'] = newExtId;
+    entries[infoPlistPath] = new TextEncoder().encode(buildPlist(info as unknown as Parameters<typeof buildPlist>[0]));
+    log(`sign: extension profile embedded for ${newExtId}`);
+  }
+
+  return zipSync(entries);
+}
+
+/**
+ * Injects the signing certificate into special apps (SideStore, AltStore,
+ * StikStore, SideStoreLc) so they can refresh themselves on-device.
+ * Matches isideload's `apply_special_app_behavior`:
+ * - SideStore/AltStore/SideStoreLc: ALTAppGroups -> Info.plist, ALTCertificateID + ALTCertificate.p12
+ * - StikStore: MachineID + Certificate.p12 (no ALTAppGroups)
+ * - SideStoreLc: inject into the framework bundle (com.SideStore.SideStore), not main bundle
+ *
+ * @param machineID the dev-portal certificate's machineId (from the CSR),
+ * not the anisette machineID.
+ * @param groupIdentifier the App Group identifier (e.g. group.com.SideStore.SideStore.<TEAM>)
+ */
+async function injectSpecialAppCertificate(
+  signedIpaBytes: Uint8Array,
+  certDer: Uint8Array,
+  privateKey: Uint8Array,
+  machineID: string,
+  specialApp: 'SideStore' | 'AltStore' | 'StikStore' | 'SideStoreLc',
+  groupIdentifier: string,
+  log: (m: string) => void,
+): Promise<Uint8Array> {
+  const entries = unzipSync(signedIpaBytes);
+  const names = Object.keys(entries);
+  // Find the main app bundle: Payload/<App>.app/
+  const appMatch = names.find((n) => /^Payload\/[^/]+\.app\/Info\.plist$/.test(n))?.match(/^(Payload\/[^/]+\.app)\//);
+  if (!appMatch) {
+    log('sign: warning: could not find app bundle for certificate injection');
+    return signedIpaBytes;
+  }
+  const appDir = appMatch[1];
+
+  // Determine target bundle for certificate injection.
+  // SideStoreLc: inject into the framework bundle, not the main bundle.
+  let targetDir = appDir;
+  if (specialApp === 'SideStoreLc') {
+    const fwInfo = names.find((n) =>
+      n.startsWith(`${appDir}/Frameworks/`) &&
+      n.endsWith('.framework/Info.plist')
+    );
+    if (fwInfo) {
+      // Verify it's the SideStore framework by checking bundle ID
+      const fwInfoRaw = entries[fwInfo];
+      if (fwInfoRaw) {
+        try {
+          const fwPlist = parsePlist(fwInfoRaw) as { [k: string]: PlistValue };
+          if (fwPlist['CFBundleIdentifier'] === 'com.SideStore.SideStore') {
+            targetDir = fwInfo.substring(0, fwInfo.length - '/Info.plist'.length);
+            log(`sign: SideStoreLc detected, injecting into framework: ${targetDir}`);
+          }
+        } catch {
+          // Fall through to main bundle
+        }
+      }
     }
   }
-  if (removed > 0) {
-    log(`sign: stripped ${removed} app extension files (PlugIns/)`);
+
+  // Parse certificate to get serial number. isideload formats it as
+  // uppercase hex without leading zeros.
+  const certAsn1 = forge.asn1.fromDer(forge.util.createBuffer(new Uint8Array(certDer)));
+  const cert = forge.pki.certificateFromAsn1(certAsn1);
+  const serialNumber = (cert.serialNumber.replace(/^0+/, '') || '0').toUpperCase();
+
+  // Generate p12 encrypted with machineID.
+  const privateKeyAsn1 = forge.asn1.fromDer(forge.util.createBuffer(new Uint8Array(privateKey)));
+  const forgePrivateKey = forge.pki.privateKeyFromAsn1(privateKeyAsn1);
+  const p12Asn1 = forge.pkcs12.toPkcs12Asn1(
+    forgePrivateKey,
+    [cert],
+    machineID,
+    { algorithm: '3des' },
+  );
+  const p12Der = forge.asn1.toDer(p12Asn1).getBytes();
+  const p12Bytes = new Uint8Array(p12Der.length);
+  for (let i = 0; i < p12Der.length; i++) {
+    p12Bytes[i] = p12Der.charCodeAt(i);
   }
+
+  // Key names differ for StikStore (matches isideload).
+  const idKey = specialApp === 'StikStore' ? 'MachineID' : 'ALTCertificateID';
+  const p12Name = specialApp === 'StikStore' ? 'Certificate.p12' : 'ALTCertificate.p12';
+
+  // Write p12 to target bundle root.
+  entries[`${targetDir}/${p12Name}`] = p12Bytes;
+
+  // Write certificate ID to target bundle's Info.plist.
+  const infoPlistPath = `${targetDir}/Info.plist`;
+  const infoRaw = entries[infoPlistPath];
+  if (infoRaw) {
+    const info = parsePlist(infoRaw) as { [k: string]: PlistValue };
+    info[idKey] = serialNumber;
+    // ALTAppGroups for SideStore/AltStore/SideStoreLc (not StikStore).
+    // Injected into the MAIN app's Info.plist, not the framework.
+    if (specialApp !== 'StikStore') {
+      const mainInfoRaw = entries[`${appDir}/Info.plist`];
+      if (mainInfoRaw) {
+        const mainInfo = parsePlist(mainInfoRaw) as { [k: string]: PlistValue };
+        mainInfo['ALTAppGroups'] = [groupIdentifier];
+        entries[`${appDir}/Info.plist`] = new TextEncoder().encode(buildPlist(mainInfo as unknown as Parameters<typeof buildPlist>[0]));
+        log(`sign: injected ALTAppGroups: ${groupIdentifier}`);
+      }
+    }
+    entries[infoPlistPath] = new TextEncoder().encode(buildPlist(info as unknown as Parameters<typeof buildPlist>[0]));
+  }
+
+  log(`sign: injected certificate for ${specialApp} (serial ${serialNumber})`);
   return zipSync(entries);
+}
+
+/**
+ * Detects special apps that need certificate injection (matches isideload's get_special_app).
+ * Returns the special app type or null if not a special app.
+ */
+function detectSpecialApp(
+  bundleId: string,
+  ipaEntries: { [k: string]: Uint8Array },
+): 'SideStore' | 'AltStore' | 'StikStore' | 'SideStoreLc' | null {
+  if (bundleId === 'com.rileytestut.AltStore') return 'AltStore';
+  if (bundleId === 'com.SideStore.SideStore') return 'SideStore';
+  if (bundleId === 'app.stik.store') return 'StikStore';
+  // SideStoreLc: check if any framework has the SideStore bundle ID
+  const names = Object.keys(ipaEntries);
+  for (const n of names) {
+    if (n.includes('/Frameworks/') && n.endsWith('.framework/Info.plist')) {
+      try {
+        const raw = ipaEntries[n];
+        const plist = parsePlist(raw) as { [k: string]: unknown };
+        if (plist['CFBundleIdentifier'] === 'com.SideStore.SideStore') {
+          return 'SideStoreLc';
+        }
+      } catch {
+        // Continue checking
+      }
+    }
+  }
+  return null;
 }
 
 function parseIpaInfo(ipaBytes: Uint8Array, log: (m: string) => void): IpaInfo {
@@ -405,7 +627,7 @@ async function ensureSigningIdentity(
   team: AltTeam,
   appleId: string,
   log: (m: string) => void,
-): Promise<{ certDer: Uint8Array; privateKey: Uint8Array }> {
+): Promise<{ certDer: Uint8Array; privateKey: Uint8Array; machineId?: string }> {
   const cache = readCertCache()[certCacheKey(appleId, team.identifier)];
   const certificates = await api.fetchCertificates(session, team);
   if (cache) {
@@ -415,13 +637,17 @@ async function ensureSigningIdentity(
       return {
         certDer: base64ToBytes(cache.certDerB64),
         privateKey: base64ToBytes(cache.privateKeyB64),
+        // The dev-portal certificate record carries the machineId that was
+        // sent with the CSR; SideStore needs it as the ALTCertificate.p12
+        // password (matches isideload's behavior).
+        machineId: (stillThere as { machineId?: string }).machineId,
       };
     }
     log('sign: cached certificate no longer exists, creating a new one');
   }
 
   const machineName = 'SideImpactor Web';
-  const create = async (): Promise<{ certDer: Uint8Array; privateKey: Uint8Array }> => {
+  const create = async (): Promise<{ certDer: Uint8Array; privateKey: Uint8Array; machineId?: string }> => {
     const { certificate, privateKey } = await api.addCertificate(session, team, machineName);
     log(`sign: created certificate ${certificate.identifier}`);
     writeCertCacheEntry(appleId, team.identifier, {
@@ -429,7 +655,11 @@ async function ensureSigningIdentity(
       certDerB64: bytesToBase64(certificate.publicKey),
       privateKeyB64: bytesToBase64(privateKey),
     });
-    return { certDer: certificate.publicKey, privateKey };
+    return {
+      certDer: certificate.publicKey,
+      privateKey,
+      machineId: (certificate as { machineId?: string }).machineId,
+    };
   };
 
   try {
@@ -481,12 +711,7 @@ export async function signIpaWithAppleContext(
   const team = toAltTeam(refreshedContext);
 
   const ipaBytes = new Uint8Array(await req.ipaFile.arrayBuffer());
-  // Strip App Extensions (PlugIns/*.appex): we don't provision separate App
-  // IDs/profiles for them yet, and an unsigned appex blocks the host app from
-  // launching ("missing a valid provisioning profile"). Removing PlugIns lets
-  // the main app install and launch; extensions simply won't be present.
-  const strippedIpaBytes = stripAppExtensions(ipaBytes, log);
-  const info = parseIpaInfo(strippedIpaBytes, log);
+  const info = parseIpaInfo(ipaBytes, log);
 
   const outputBundleId = req.bundleIdOverride ?? `${info.bundleId}.${team.identifier}`;
   log(`sign: provisioning for ${outputBundleId}`);
@@ -506,9 +731,42 @@ export async function signIpaWithAppleContext(
   log('sign: downloading provisioning profile...');
   const profile = await api.fetchProvisioningProfile(session, team, appId);
 
+  // Provision App Extensions: each .appex needs its own App ID and provisioning
+  // profile, otherwise iOS refuses to launch the host app ("The app extension
+  // is missing a valid provisioning profile").
+  let ipaForSigning = await embedExtensionProfiles(
+    ipaBytes, api, session, team, info.bundleId, outputBundleId, log,
+  );
+
+  // For special apps (SideStore/AltStore/StikStore/SideStoreLc): inject the
+  // signing certificate so they can refresh themselves on-device
+  // (matches isideload's apply_special_app_behavior). Must be done BEFORE
+  // signing, otherwise modifying the signed IPA breaks the code signature.
+  // The P12 password must be the dev-portal certificate's machineId (sent
+  // with the CSR), NOT the anisette machineID — they are different values.
+  const specialApp = detectSpecialApp(info.bundleId, unzipSync(ipaForSigning));
+  if (specialApp) {
+    const machineID = identity.machineId;
+    if (machineID) {
+      // Group identifier for ALTAppGroups (matches isideload):
+      // SideStoreLc: group.com.SideStore.SideStore.<TEAM>
+      // Others: group.<bundleId>.<TEAM>
+      const groupIdentifier = specialApp === 'SideStoreLc'
+        ? `group.com.SideStore.SideStore.${team.identifier}`
+        : `group.${info.bundleId}.${team.identifier}`;
+      log(`sign: injecting certificate for ${specialApp}...`);
+      ipaForSigning = await injectSpecialAppCertificate(
+        ipaForSigning, identity.certDer, identity.privateKey, machineID,
+        specialApp, groupIdentifier, log,
+      );
+    } else {
+      log(`sign: warning: no certificate machineId, skipping ${specialApp} certificate injection`);
+    }
+  }
+
   log('sign: re-signing IPA (this can take a while)...');
   const result = await signIPA({
-    ipaData: strippedIpaBytes,
+    ipaData: ipaForSigning,
     certificate: identity.certDer,
     privateKey: identity.privateKey,
     provisioningProfile: profile.data,
@@ -517,8 +775,10 @@ export async function signIpaWithAppleContext(
     bundleVersion: info.bundleVersion,
   });
 
+  const signedBytes: Uint8Array = new Uint8Array(result.data);
+
   const baseName = req.ipaFile.name.replace(/\.ipa$/i, '');
-  const signedFile = new File([new Uint8Array(result.data)], sanitizeFilename(`${baseName}-signed.ipa`), {
+  const signedFile = new File([signedBytes.buffer as ArrayBuffer], sanitizeFilename(`${baseName}-signed.ipa`), {
     type: 'application/octet-stream',
   });
   log(`sign: done -> ${signedFile.name} (${(signedFile.size / 1048576).toFixed(2)} MB)`);

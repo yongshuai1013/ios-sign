@@ -66,6 +66,9 @@ export async function pairDeviceFlow(ctx: PairContext): Promise<PairedDeviceInfo
     ctx.log('pair: creating pair record...');
     try {
       const pairResult = await client.pairDevice(hostId, systemBuid);
+      // SideStore requires the UDID field in the exported pairing file,
+      // otherwise it reports "Invalid Pairing File".
+      (pairResult as { udid?: string }).udid = udid;
       savePairRecordForUdid(udid, pairResult);
       ctx.log('pair: success');
     } catch (error) {

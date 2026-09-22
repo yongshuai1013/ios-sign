@@ -25,6 +25,8 @@ interface SignPageProps {
   signBusy: boolean;
   signDisabled: boolean;
 
+  onRevokeCert: () => void;
+
   onInstall: () => void;
   installBusy: boolean;
   installDisabled: boolean;
@@ -50,6 +52,7 @@ export function SignPage({
   onSign,
   signBusy,
   signDisabled,
+  onRevokeCert,
   onInstall,
   installBusy,
   installDisabled,
@@ -107,6 +110,15 @@ export function SignPage({
           className="min-w-[120px]"
         >
           Sign IPA
+        </Button>
+        <Button
+          variant="ghost"
+          disabled={signBusy || signDisabled}
+          onClick={onRevokeCert}
+          className="min-w-[140px]"
+          title="撤銷舊憑證，下次簽名建新的"
+        >
+          Revoke Cert
         </Button>
         <Button
           variant="primary"
