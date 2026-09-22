@@ -1161,6 +1161,61 @@ class AppleAPI {
     }
     return groupsArray.map((groupDict) => this.parseAppGroup(groupDict));
   }
+  async addAppGroup(session, team, name, groupIdentifier) {
+    const headers = this.buildHeaders(session, team);
+    const body = this.buildRequestBody({
+      name,
+      identifier: groupIdentifier
+    }, team);
+    const resp = await this.fetch.post(`${this.baseURL}ios/addApplicationGroup.action?clientId=${CLIENT_ID2}`, body, headers);
+    const text = await resp.text();
+    const plist = parsePlist(text);
+    const resultCode = plist["resultCode"];
+    if (resultCode !== undefined && resultCode !== 0) {
+      const errorStr = plist["userString"] ?? plist["resultString"] ?? "Unknown error";
+      throw new Error(`Failed to add App Group: ${errorStr} (${resultCode})`);
+    }
+    const groupDict = plist["applicationGroup"];
+    if (!groupDict) {
+      throw new Error("Failed to add App Group: no applicationGroup in response");
+    }
+    return this.parseAppGroup(groupDict);
+  }
+  async updateAppIdFeatures(session, team, appId, features) {
+    const headers = this.buildHeaders(session, team);
+    const body = this.buildRequestBody({
+      appIdId: appId.identifier,
+      features
+    }, team);
+    const resp = await this.fetch.post(`${this.baseURL}ios/updateAppId.action?clientId=${CLIENT_ID2}`, body, headers);
+    const text = await resp.text();
+    const plist = parsePlist(text);
+    const resultCode = plist["resultCode"];
+    if (resultCode !== undefined && resultCode !== 0) {
+      const errorStr = plist["userString"] ?? plist["resultString"] ?? "Unknown error";
+      throw new Error(`Failed to update App ID features: ${errorStr} (${resultCode})`);
+    }
+    const appIdDict = plist["appId"];
+    if (!appIdDict) {
+      throw new Error("Failed to update App ID: no appId in response");
+    }
+    return this.parseAppID(appIdDict);
+  }
+  async assignAppGroupToAppId(session, team, appId, appGroup) {
+    const headers = this.buildHeaders(session, team);
+    const body = this.buildRequestBody({
+      appIdId: appId.identifier,
+      applicationGroupId: appGroup.identifier
+    }, team);
+    const resp = await this.fetch.post(`${this.baseURL}ios/assignApplicationGroupToAppId.action?clientId=${CLIENT_ID2}`, body, headers);
+    const text = await resp.text();
+    const plist = parsePlist(text);
+    const resultCode = plist["resultCode"];
+    if (resultCode !== undefined && resultCode !== 0) {
+      const errorStr = plist["userString"] ?? plist["resultString"] ?? "Unknown error";
+      throw new Error(`Failed to assign App Group to App ID: ${errorStr} (${resultCode})`);
+    }
+  }
   async fetchProvisioningProfile(session, team, appID) {
     const headers = this.buildHeaders(session, team);
     const body = this.buildRequestBody({

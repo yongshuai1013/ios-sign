@@ -300,6 +300,8 @@ describe('WebUsbMuxDevice (no WebUSB in bun)', () => {
   function fakeDevice(): UsbDeviceLike {
     return {
       opened: false,
+      vendorId: 0x05ac,
+      productId: 0x12a8,
       configurations: [],
       open: async () => undefined,
       close: async () => undefined,
