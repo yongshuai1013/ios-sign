@@ -1,4 +1,4 @@
-# SideImpactor（TypeScript 完整重寫）
+# SideImpactor
 
 SideImpactor（https://github.com/lbr77/SideImpactor）的 TypeScript 完整實作，
 整合 idevice_pair（https://github.com/jkcoxson/idevice_pair）的配對檔案功能。
@@ -59,7 +59,7 @@ XML plist，主要欄位：`public_key`、`private_key`（Ed25519）、`identifi
   任何人都可以用你的 Worker 連到任意 Apple 主機（預設僅允許 443/TCP），
   部署時請務必設定存取密碼。
 
-## 已知缺口（誠實版）
+## 已知缺口
 
 以下功能會丟出明確錯誤，不會假裝成功：
 
