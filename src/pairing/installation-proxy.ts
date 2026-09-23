@@ -11,6 +11,7 @@
  */
 
 import plist from 'plist';
+import { isBplist, parseBplist } from '../lib/bplist';
 import { AfcClient } from './afc.js';
 
 /** Byte-oriented transport, mirroring the shape defined in usbmuxd.ts. */
@@ -86,7 +87,27 @@ export class InstallationProxyClient {
       false,
     );
     const body = await this.transport.readExact(length);
-    return plist.parse(new TextDecoder().decode(body)) as Record<string, unknown>;
+    try {
+      // installation_proxy replies with binary plists (bplist00); lockdownd
+      // uses XML. Detect and parse accordingly (don't UTF-8 decode binary).
+      if (isBplist(body)) {
+        return parseBplist(body) as Record<string, unknown>;
+      }
+      const text = new TextDecoder().decode(body);
+      return plist.parse(text) as Record<string, unknown>;
+    } catch (e) {
+      const preview = (() => {
+        try {
+          const t = new TextDecoder().decode(body.slice(0, 200));
+          return t.replace(/\n/g, '\\n');
+        } catch {
+          return '<binary>';
+        }
+      })();
+      throw new Error(
+        `installation_proxy: plist parse failed (length=${length}, preview="${preview}"): ${e instanceof Error ? e.message : String(e)}`,
+      );
+    }
   }
 
   private async readPlistWithTimeout(timeoutMs: number): Promise<Record<string, unknown>> {
@@ -181,6 +202,67 @@ export class InstallationProxyClient {
     for await (const event of this.installEvents(packagePath, options)) {
       onProgress?.(event.status, event.percentComplete);
     }
+  }
+
+  /**
+   * Lists applications installed on the device.
+   *
+   * Sends the `Browse` command and collects `CurrentList` arrays from the
+   * status replies until `Status == "Complete"`. Each entry is the raw
+   * attribute dict the device returned (keys depend on `returnAttributes`).
+   *
+   * @param returnAttributes plist keys to request per app; defaults to a
+   *   small set useful for a refresh UI.
+   */
+  async browse(
+    returnAttributes: string[] = [
+      'CFBundleIdentifier',
+      'CFBundleDisplayName',
+      'CFBundleShortVersionString',
+      'CFBundleVersion',
+    ],
+  ): Promise<Record<string, unknown>[]> {
+    await this.sendPlist({
+      Command: 'Browse',
+      ClientOptions: {
+        ApplicationType: 'User',
+        ReturnAttributes: returnAttributes,
+      },
+    });
+
+    const apps: Record<string, unknown>[] = [];
+    for (let i = 0; i < MAX_INSTALL_MESSAGES; i++) {
+      const res = await this.readPlistWithTimeout(INSTALL_MESSAGE_TIMEOUT_MS);
+
+      const status = typeof res['Status'] === 'string' ? res['Status'] : '';
+      const error =
+        res['Error'] !== undefined && res['Error'] !== null ? String(res['Error']) : undefined;
+      if (error) {
+        const errorDescription =
+          res['ErrorDescription'] !== undefined && res['ErrorDescription'] !== null
+            ? String(res['ErrorDescription'])
+            : undefined;
+        throw new InstallationProxyError(
+          `installation_proxy: ${error}${errorDescription ? ` (${errorDescription})` : ''}`,
+        );
+      }
+
+      const current = res['CurrentList'];
+      if (Array.isArray(current)) {
+        for (const entry of current) {
+          if (entry !== null && typeof entry === 'object') {
+            apps.push(entry as Record<string, unknown>);
+          }
+        }
+      }
+
+      if (status === 'Complete') {
+        return apps;
+      }
+    }
+    throw new InstallationProxyError(
+      `installation_proxy: exceeded ${MAX_INSTALL_MESSAGES} reply messages`,
+    );
   }
 }
 

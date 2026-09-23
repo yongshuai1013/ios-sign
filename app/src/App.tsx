@@ -12,6 +12,7 @@ import { Button } from './components/ui/Button';
 import { SignPage } from './components/SignPage';
 import { PairingPage } from './components/PairingPage';
 import { DirectInstallPage } from './components/DirectInstallPage';
+import { RefreshPage, type RefreshRow } from './components/RefreshPage';
 import { TrustModal, type TrustModalState } from './components/TrustModal';
 import { TwoFactorModal } from './components/TwoFactorModal';
 import { ProgressCard } from './components/ProgressCard';
@@ -20,6 +21,8 @@ import { ensureClientSelected, isPairingDialogPendingError, pairDeviceFlow, type
 import { checkAnisetteProvisioned, ensureAnisetteData, loginAccount } from './flows/login';
 import { signIpaFlow } from './flows/sign';
 import { installFlow } from './flows/install';
+import { browseInstalledApps, refreshAppFlow, type InstalledAppInfo } from './flows/refresh';
+import { cacheIpa, getCachedIpa, listCachedIpas, type CachedIpaMeta } from './lib/ipa-cache';
 
 import {
   APPLE_ACCOUNT_LIST_STORAGE_KEY,
@@ -484,6 +487,20 @@ export function App() {
         file: result.signedFile,
         sourceKey: buildPreparedSourceKey(selectedIpaFile, targetUdid),
       });
+      // Cache the original IPA for the Refresh page (keyed by output bundle ID).
+      if (selectedIpaFile) {
+        addLog('sign: caching IPA for refresh…');
+        cacheIpa(
+          {
+            bundleId: result.outputBundleId,
+            displayName: result.bundleName,
+            fileName: selectedIpaFile.name,
+            cachedAt: Date.now(),
+            size: selectedIpaFile.size,
+          },
+          selectedIpaFile,
+        ).then(() => addLog('sign: IPA cached'));
+      }
       // 簽名完成後清除設備連接狀態，強制用戶重新連接。
       // 簽名耗時較長（20-30 秒），期間 USB 可能已斷開；若保留舊的
       // pairedDeviceInfo，安裝按鈕會顯示為可用（黑色），但實際點安裝
@@ -702,6 +719,135 @@ export function App() {
     }
   }, [addLog, pairedDeviceInfo, runPairFlow, selectedIpaFile, selectedTargetUdid]);
 
+  // ---- refresh page state ----
+  const [refreshRows, setRefreshRows] = useState<RefreshRow[] | null>(null);
+  const [refreshScanBusy, setRefreshScanBusy] = useState(false);
+  const [refreshingBundleId, setRefreshingBundleId] = useState<string | null>(null);
+  const [refreshResult, setRefreshResult] = useState<{
+    bundleId: string;
+    displayName: string;
+    success: boolean;
+    error?: string;
+  } | null>(null);
+  const [refreshLog, setRefreshLog] = useState<string[]>([]);
+  const refreshClientRef = useRef<WebUsbMuxClient | null>(null);
+
+  const refreshAddLog = useCallback((msg: string) => {
+    setRefreshLog((prev) => [...prev.slice(-199), msg]);
+  }, []);
+
+  const handleRefreshScan = useCallback(async () => {
+    if (refreshScanBusy) return;
+    const targetUdid = selectedTargetUdid.trim();
+    if (targetUdid.length === 0) return;
+    setRefreshScanBusy(true);
+    setRefreshRows(null);
+    refreshAddLog('refresh: connecting…');
+    try {
+      if (refreshClientRef.current) {
+        try { refreshClientRef.current.close(); } catch { /* ignore */ }
+        refreshClientRef.current = null;
+      }
+      const client = await ensureClientSelected({
+        log: refreshAddLog,
+        clientRef: refreshClientRef,
+        onStateChange: () => {},
+        onTrustPending: () => setTrustState('pending'),
+      });
+      const apps = await browseInstalledApps({
+        client,
+        targetUdid,
+        log: refreshAddLog,
+      });
+      const cachedMetas = await listCachedIpas();
+      const byId = new Map(cachedMetas.map((m) => [m.bundleId, m]));
+      setRefreshRows(apps.map((app) => ({ app, cached: byId.get(app.bundleId) ?? null })));
+    } catch (error) {
+      refreshAddLog(`refresh scan failed: ${formatError(error)}`);
+    } finally {
+      setRefreshScanBusy(false);
+    }
+  }, [refreshScanBusy, selectedTargetUdid, refreshAddLog]);
+
+  const handleUploadIpa = useCallback(
+    async (bundleId: string, displayName: string, file: File) => {
+      try {
+        refreshAddLog(`refresh: caching uploaded IPA for ${bundleId}…`);
+        await cacheIpa(
+          {
+            bundleId,
+            displayName,
+            fileName: file.name,
+            cachedAt: Date.now(),
+            size: file.size,
+          },
+          file,
+        );
+        refreshAddLog(`refresh: IPA cached (${(file.size / 1024 / 1024).toFixed(1)} MB)`);
+        // Refresh the cached status in the rows without re-scanning the device.
+        const cachedMetas = await listCachedIpas();
+        const byId = new Map(cachedMetas.map((m) => [m.bundleId, m]));
+        setRefreshRows((prev) =>
+          prev === null
+            ? prev
+            : prev.map((row) => ({ ...row, cached: byId.get(row.app.bundleId) ?? null })),
+        );
+      } catch (error) {
+        refreshAddLog(`refresh: failed to cache IPA: ${formatError(error)}`);
+      }
+    },
+    [refreshAddLog],
+  );
+
+  const handleRefreshApp = useCallback(async (bundleId: string) => {
+    if (refreshingBundleId !== null) return;
+    const targetUdid = selectedTargetUdid.trim();
+    if (targetUdid.length === 0 || !loginContext) return;
+    const displayName =
+      refreshRows?.find((r) => r.app.bundleId === bundleId)?.app.displayName ?? bundleId;
+    setRefreshingBundleId(bundleId);
+    setRefreshResult(null);
+    try {
+      const { anisetteData: nextAnisette } = await ensureAnisetteData(anisetteData, refreshAddLog);
+      setAnisetteData(nextAnisette);
+      setAnisetteProvisioned(true);
+
+      if (refreshClientRef.current) {
+        try { refreshClientRef.current.close(); } catch { /* ignore */ }
+        refreshClientRef.current = null;
+      }
+      const client = await ensureClientSelected({
+        log: refreshAddLog,
+        clientRef: refreshClientRef,
+        onStateChange: () => {},
+        onTrustPending: () => setTrustState('pending'),
+      });
+      await refreshAppFlow({
+        client,
+        targetUdid,
+        bundleId,
+        context: loginContext,
+        anisetteData: nextAnisette,
+        deviceName: pairedDeviceInfo?.udid === targetUdid ? pairedDeviceInfo.name ?? undefined : undefined,
+        log: refreshAddLog,
+      });
+      // Update the cached-at timestamp so the expiry estimate resets.
+      const cached = await getCachedIpa(bundleId);
+      if (cached) {
+        await cacheIpa({ ...cached.meta, cachedAt: Date.now() }, cached.data);
+      }
+      setRefreshResult({ bundleId, displayName, success: true });
+      // Re-scan to refresh the list.
+      await handleRefreshScan();
+    } catch (error) {
+      const msg = formatError(error);
+      refreshAddLog(`refresh failed: ${msg}`);
+      setRefreshResult({ bundleId, displayName, success: false, error: msg });
+    } finally {
+      setRefreshingBundleId(null);
+    }
+  }, [refreshingBundleId, selectedTargetUdid, loginContext, anisetteData, pairedDeviceInfo, refreshAddLog, handleRefreshScan, refreshRows]);
+
   // ---- switch account ----
   const handleSwitchAccount = useCallback(
     (summary: StoredAccountSummary) => {
@@ -828,6 +974,26 @@ export function App() {
             onInstall={handleDirectInstall}
             installBusy={busy.install}
             installDisabled={!selectedIpaFile || !selectedTargetUdid.trim() || busy.install}
+          />
+        ) : currentPage === 'refresh' ? (
+          <RefreshPage
+            knownUdids={knownUdids}
+            connectedUdid={pairedDeviceInfo?.udid ?? null}
+            selectedUdid={selectedTargetUdid}
+            onSelectedUdidChange={handleSelectedUdidChange}
+            onPair={handlePair}
+            pairBusy={busy.pair}
+            pairDisabled={pairDisabled}
+            rows={refreshRows}
+            scanBusy={refreshScanBusy}
+            onScan={handleRefreshScan}
+            scanDisabled={!selectedTargetUdid.trim() || refreshScanBusy}
+            refreshingBundleId={refreshingBundleId}
+            onRefresh={handleRefreshApp}
+            onUploadIpa={handleUploadIpa}
+            refreshResult={refreshResult}
+            onDismissResult={() => setRefreshResult(null)}
+            log={refreshLog}
           />
         ) : (
           <SignPage

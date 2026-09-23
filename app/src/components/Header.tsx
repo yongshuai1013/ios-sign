@@ -57,6 +57,14 @@ export function Header({ currentPage, onNavigate }: HeaderProps) {
           >
             Direct Install
           </button>
+          <button
+            type="button"
+            className="seg-btn"
+            data-active={currentPage === 'refresh'}
+            onClick={() => onNavigate('refresh')}
+          >
+            Refresh
+          </button>
         </nav>
       </div>
     </header>

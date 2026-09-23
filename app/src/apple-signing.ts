@@ -111,6 +111,7 @@ export interface SignIpaResult {
   signedFile: File;
   outputBundleId: string;
   teamId: string;
+  bundleName: string;
 }
 
 const CERT_KEY_STORAGE_KEY = 'webmuxd:cert-keys';
@@ -792,5 +793,5 @@ export async function signIpaWithAppleContext(
     type: 'application/octet-stream',
   });
   log(`sign: done -> ${signedFile.name} (${(signedFile.size / 1048576).toFixed(2)} MB)`);
-  return { signedFile, outputBundleId, teamId: team.identifier };
+  return { signedFile, outputBundleId, teamId: team.identifier, bundleName: info.bundleName };
 }

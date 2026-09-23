@@ -19,6 +19,10 @@ export interface SignIpaRequest {
 export interface SignIpaResult {
   signedFile: File;
   context: AppleDeveloperContext;
+  /** Final bundle ID installed on device (after team suffix). */
+  outputBundleId: string;
+  /** Display name from the IPA's Info.plist, if known. */
+  bundleName?: string;
 }
 
 export async function signIpaFlow(req: SignIpaRequest): Promise<SignIpaResult> {
@@ -44,5 +48,10 @@ export async function signIpaFlow(req: SignIpaRequest): Promise<SignIpaResult> {
   });
   req.log(`sign: done -> ${result.signedFile.name}`);
 
-  return { signedFile: result.signedFile, context: refreshed };
+  return {
+    signedFile: result.signedFile,
+    context: refreshed,
+    outputBundleId: result.outputBundleId,
+    bundleName: result.bundleName,
+  };
 }
