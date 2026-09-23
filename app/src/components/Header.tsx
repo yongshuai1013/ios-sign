@@ -49,6 +49,14 @@ export function Header({ currentPage, onNavigate }: HeaderProps) {
           >
             Sign &amp; Install
           </button>
+          <button
+            type="button"
+            className="seg-btn"
+            data-active={currentPage === 'direct-install'}
+            onClick={() => onNavigate('direct-install')}
+          >
+            Direct Install
+          </button>
         </nav>
       </div>
     </header>

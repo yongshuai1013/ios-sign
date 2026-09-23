@@ -85,6 +85,9 @@ export interface TwoFactorContext {
   requestSms: (phoneId: number) => Promise<void>;
   /** Submit the code received via SMS for the given phone id. */
   submitSmsCode: (phoneId: number, code: string) => Promise<void>;
+  /** Trigger Apple to push a 2FA code to trusted devices. Called on demand
+      when the user chooses device verification (not auto-triggered). */
+  triggerDevicePush: () => Promise<void>;
 }
 
 export interface AppleDeveloperLoginRequest {
@@ -218,7 +221,15 @@ export async function loginAppleDeveloperAccount(
     resolveCode = resolve;
   });
 
-  const verificationHandler = (submitCode: (code: string) => void): void => {
+  const verificationHandler = (
+    submitCode: (code: string) => void,
+    sms?: {
+      trustedPhoneNumbers: TrustedPhoneNumber[];
+      requestSms: (phoneId: number) => Promise<void>;
+      submitSmsCode: (phoneId: number, code: string) => Promise<void>;
+      triggerDevicePush: () => Promise<void>;
+    },
+  ): void => {
     if (!req.onTwoFactorRequired) {
       throw new Error('two-factor authentication required but no UI handler is wired up');
     }
@@ -226,17 +237,16 @@ export async function loginAppleDeveloperAccount(
       submitDeviceCode: (code: string) => {
         resolveCode?.(code);
       },
-      trustedPhoneNumbers: [],
-      requestSms: async () => {
-        throw new Error(
-          'SMS two-factor is not supported by this build (altsign.js only handles trusted-device codes).',
-        );
-      },
-      submitSmsCode: async () => {
-        throw new Error(
-          'SMS two-factor is not supported by this build (altsign.js only handles trusted-device codes).',
-        );
-      },
+      trustedPhoneNumbers: sms?.trustedPhoneNumbers ?? [],
+      requestSms: sms?.requestSms ?? (async () => {
+        throw new Error('SMS two-factor is not available for this account.');
+      }),
+      submitSmsCode: sms?.submitSmsCode ?? (async () => {
+        throw new Error('SMS two-factor is not available for this account.');
+      }),
+      triggerDevicePush: sms?.triggerDevicePush ?? (async () => {
+        throw new Error('Device push is not available for this account.');
+      }),
     };
     req.onTwoFactorRequired(ctx);
     void codePromise.then(async (code) => {

@@ -7,8 +7,11 @@ import { revokeCachedCertificate } from './apple-signing';
 import { Header, type AppPage } from './components/Header';
 import { LoginPage } from './components/LoginPage';
 import { LoginModal } from './components/LoginModal';
+import { Modal } from './components/ui/Modal';
+import { Button } from './components/ui/Button';
 import { SignPage } from './components/SignPage';
 import { PairingPage } from './components/PairingPage';
+import { DirectInstallPage } from './components/DirectInstallPage';
 import { TrustModal, type TrustModalState } from './components/TrustModal';
 import { TwoFactorModal } from './components/TwoFactorModal';
 import { ProgressCard } from './components/ProgressCard';
@@ -85,6 +88,11 @@ export function App() {
   // Login modal
   const [loginModalOpen, setLoginModalOpen] = useState(false);
   const [loginError, setLoginError] = useState<string | null>(null);
+  // Pre-selected 2FA method chosen at Sign In click time (before login attempt),
+  // so when 2FA is required we go straight to the chosen method without a
+  // second choice dialog. Stored in a ref to avoid re-renders.
+  const preferredTwoFactorMethodRef = useRef<'device' | 'sms' | null>(null);
+  const [methodChoiceOpen, setMethodChoiceOpen] = useState(false);
 
   // Device
   const [pairedDeviceInfo, setPairedDeviceInfo] = useState<PairedDeviceInfo | null>(null);
@@ -118,6 +126,7 @@ export function App() {
     open: boolean;
     ctx: TwoFactorContext | null;
     error: string | null;
+    initialMode?: 'device' | 'sms';
   }>({ open: false, ctx: null, error: null });
   const twoFactorCancelledRef = useRef(false);
 
@@ -330,7 +339,20 @@ export function App() {
   }, [runPairFlow]);
 
   // ---- login flow ----
-  const handleLogin = useCallback(async () => {
+  // Step 1: User clicks Sign In -> show 2FA method choice first (so when 2FA
+  // is required we go straight to the chosen method, no second dialog).
+  const handleLogin = useCallback(() => {
+    if (busyRef.current.loginSign) return;
+    const trimmedAppleId = appleId.trim();
+    if (!trimmedAppleId || !password) {
+      addLog('login failed: please input email and password');
+      return;
+    }
+    // Ask for 2FA method upfront
+    setMethodChoiceOpen(true);
+  }, [appleId, password, addLog]);
+
+  const doLogin = useCallback(async () => {
     if (busyRef.current.loginSign) return;
     const trimmedAppleId = appleId.trim();
     if (!trimmedAppleId || !password) {
@@ -360,8 +382,11 @@ export function App() {
         log: addLog,
         onTwoFactorRequired: (ctx) => {
           twoFactorOpened = true;
-          setTwoFactor({ open: true, ctx, error: null });
-          addLog('login: 2FA required, opening verification dialog');
+          // Use the pre-selected method from Sign In click time; if none,
+          // TwoFactorModal will show the choose screen.
+          const initialMode = preferredTwoFactorMethodRef.current ?? undefined;
+          setTwoFactor({ open: true, ctx, error: null, initialMode });
+          addLog(`login: 2FA required, opening verification dialog (method: ${initialMode ?? 'choose'})`);
         },
       });
 
@@ -401,6 +426,12 @@ export function App() {
       setBusy((prev) => ({ ...prev, loginSign: false }));
     }
   }, [addLog, appleId, clearPrepared, navigateToPage, password]);
+
+  const handleMethodChosen = useCallback((method: 'device' | 'sms') => {
+    preferredTwoFactorMethodRef.current = method;
+    setMethodChoiceOpen(false);
+    void doLogin();
+  }, [doLogin]);
 
   const handleTwoFactorCancel = useCallback(() => {
     const ctx = twoFactor.ctx;
@@ -586,6 +617,91 @@ export function App() {
     }
   }, [addLog, pairedDeviceInfo, prepared, runPairFlow, selectedIpaFile, selectedTargetUdid]);
 
+  // ---- direct install flow (pre-signed IPA, no Apple ID signing) ----
+  const handleDirectInstall = useCallback(async () => {
+    if (busyRef.current.install) return;
+    if (!selectedIpaFile) return;
+    const targetUdid = selectedTargetUdid.trim();
+    if (targetUdid.length === 0) return;
+
+    setBusy((prev) => ({ ...prev, install: true }));
+    setProgress({ percent: 0, status: 'starting' });
+    lastInstallPercentRef.current = 0;
+
+    try {
+      // Same fresh-connection logic as handleInstall, but uses the uploaded
+      // IPA directly (assumed pre-signed, e.g. enterprise cert).
+      if (directClientRef.current) {
+        try { directClientRef.current.close(); } catch { /* ignore */ }
+        directClientRef.current = null;
+      }
+      const client = await ensureClientSelected({
+        log: addLog,
+        clientRef: directClientRef,
+        onStateChange: () => {},
+        onTrustPending: () => setTrustState('pending'),
+      });
+      try {
+        addLog('install: establishing fresh device connection...');
+        await client.reconnect();
+      } catch (reconnectError) {
+        addLog(`install: fresh connect failed (${reconnectError instanceof Error ? reconnectError.message : String(reconnectError)}), trying pair flow...`);
+      }
+      let currentDeviceUdid = pairedDeviceInfo?.udid ?? null;
+      if (!client.isSessionStarted) {
+        const pairResult = await runPairFlow({
+          showSuccess: false,
+          startLogMessage: 'install: device trust required, continue on your device',
+        });
+        if (pairResult.kind === 'pending') {
+          addLog('install paused: finish trusting the device, then install again');
+          setProgress({ percent: 0, status: 'idle' });
+          return;
+        }
+        if (pairResult.kind === 'failed') {
+          setProgress({ percent: 0, status: 'failed' });
+          return;
+        }
+        currentDeviceUdid = pairResult.info.udid;
+      }
+      if (currentDeviceUdid !== targetUdid) {
+        throw new Error('connected device udid does not match selected target');
+      }
+
+      try {
+        await installFlow({ client, targetUdid, signedFile: selectedIpaFile, log: addLog });
+      } catch (firstError) {
+        const msg = firstError instanceof Error ? firstError.message : String(firstError);
+        if (msg.includes('USB connection lost') || msg.includes('transfer') || msg.includes('not connected') || msg.includes('timeout')) {
+          addLog(`install: connection hiccup (${msg}), retrying once...`);
+          try {
+            await client.reconnect();
+            addLog('install: reconnected, retrying install...');
+            await installFlow({ client, targetUdid, signedFile: selectedIpaFile, log: addLog });
+          } catch (reconnectError) {
+            addLog('install: reconnect failed, trying fresh client...');
+            directClientRef.current = null;
+            const retryClient = await ensureClientSelected({
+              log: addLog,
+              clientRef: directClientRef,
+              onStateChange: () => {},
+              onTrustPending: () => setTrustState('pending'),
+            });
+            await installFlow({ client: retryClient, targetUdid, signedFile: selectedIpaFile, log: addLog });
+          }
+        } else {
+          throw firstError;
+        }
+      }
+      setProgress({ percent: 100, status: 'complete' });
+    } catch (error) {
+      addLog(`install failed: ${formatError(error)}`);
+      setProgress({ percent: 0, status: 'failed' });
+    } finally {
+      setBusy((prev) => ({ ...prev, install: false }));
+    }
+  }, [addLog, pairedDeviceInfo, runPairFlow, selectedIpaFile, selectedTargetUdid]);
+
   // ---- switch account ----
   const handleSwitchAccount = useCallback(
     (summary: StoredAccountSummary) => {
@@ -698,6 +814,21 @@ export function App() {
           />
         ) : currentPage === 'pairing' ? (
           <PairingPage log={addLog} clientRef={directClientRef} onPairedDevice={handlePairedDevice} />
+        ) : currentPage === 'direct-install' ? (
+          <DirectInstallPage
+            file={selectedIpaFile}
+            onFileChange={handleFileChange}
+            knownUdids={knownUdids}
+            connectedUdid={pairedDeviceInfo?.udid ?? null}
+            selectedUdid={selectedTargetUdid}
+            onSelectedUdidChange={handleSelectedUdidChange}
+            onPair={handlePair}
+            pairBusy={busy.pair}
+            pairDisabled={pairDisabled}
+            onInstall={handleDirectInstall}
+            installBusy={busy.install}
+            installDisabled={!selectedIpaFile || !selectedTargetUdid.trim() || busy.install}
+          />
         ) : (
           <SignPage
             file={selectedIpaFile}
@@ -759,7 +890,29 @@ export function App() {
         onCancel={handleTwoFactorCancel}
         serverError={twoFactor.error}
         onRetry={handleTwoFactorRetry}
+        initialMode={twoFactor.initialMode}
       />
+
+      {/* 2FA method choice dialog: shown at Sign In click time, before login */}
+      <Modal open={methodChoiceOpen} onClose={() => setMethodChoiceOpen(false)} labelledBy="method-choice-title" closeOnBackdrop={false}>
+        <h2 id="method-choice-title" className="text-[16px] font-semibold tracking-tight text-ink">
+          選擇驗證方式
+        </h2>
+        <p className="mt-1.5 text-[13px] leading-[1.55] text-muted">
+          你的 Apple ID 有在 iPhone / Mac 上登入嗎？
+        </p>
+        <div className="mt-5 grid gap-2">
+          <Button variant="primary" onClick={() => handleMethodChosen('device')}>
+            有，在裝置上收驗證碼
+          </Button>
+          <Button variant="ghost" onClick={() => handleMethodChosen('sms')}>
+            沒有，用簡訊驗證碼
+          </Button>
+        </div>
+        <div className="mt-4">
+          <Button variant="ghost" onClick={() => setMethodChoiceOpen(false)}>Cancel</Button>
+        </div>
+      </Modal>
     </main>
   );
 }

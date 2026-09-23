@@ -358,12 +358,15 @@ export default {
       // (Apple Keychain Daemon), NOT Xcode. Apple ignores 2FA requests
       // that don't look like they come from akd.
       const is2fa = p.startsWith("/grandslam/GsService2/validate") || p.startsWith("/auth/verify/");
+      // SMS 2FA endpoints use JSON, not plist (isideload apple_account.rs).
+      // Don't apply the plist Content-Type override to them.
+      const isSms2fa = p.startsWith("/auth/verify/phone");
       // isideload uses akd-mimicking headers for ALL developer API requests
       // (not just 2FA). From isideload/src/dev/developer_session.rs get_headers()
       // + grandslam.rs base_headers: 11 headers total.
       const isDevApi = target.hostname === "developerservices2.apple.com";
       let finalHeaders = fwdHeaders;
-      if (is2fa || isDevApi) {
+      if ((is2fa && !isSms2fa) || isDevApi) {
         const isideload = new Headers();
         // base_headers from grandslam.rs
         isideload.set("Content-Type", "text/x-xml-plist");

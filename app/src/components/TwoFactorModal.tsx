@@ -3,7 +3,7 @@ import { Modal } from './ui/Modal';
 import { Button } from './ui/Button';
 import type { TrustedPhoneNumber, TwoFactorContext } from '../apple-signing';
 
-type Mode = 'device' | 'sms';
+type Mode = 'choose' | 'device' | 'sms';
 
 interface TwoFactorModalProps {
   open: boolean;
@@ -13,10 +13,13 @@ interface TwoFactorModalProps {
   serverError?: string | null;
   /** Called when the user wants to retry the entire login after a server error. */
   onRetry?: () => void;
+  /** Pre-selected 2FA method from Sign In click time. If set, modal opens
+      directly in that mode; otherwise shows the choose screen. */
+  initialMode?: 'device' | 'sms';
 }
 
-export function TwoFactorModal({ open, ctx, onCancel, serverError, onRetry }: TwoFactorModalProps) {
-  const [mode, setMode] = useState<Mode>('device');
+export function TwoFactorModal({ open, ctx, onCancel, serverError, onRetry, initialMode }: TwoFactorModalProps) {
+  const [mode, setMode] = useState<Mode>('choose');
   const [selectedPhone, setSelectedPhone] = useState<TrustedPhoneNumber | null>(null);
   const [code, setCode] = useState('');
   const [localError, setLocalError] = useState<string | null>(null);
@@ -24,6 +27,9 @@ export function TwoFactorModal({ open, ctx, onCancel, serverError, onRetry }: Tw
   const [smsBusy, setSmsBusy] = useState(false);
   const [verifyBusy, setVerifyBusy] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
+  // Synchronous guard for SMS requests: React state updates are async, so
+  // rapid taps on mobile can slip through `smsBusy` before it takes effect.
+  const smsBusyRef = useRef(false);
 
   const displayError = serverError || localError;
   const phones = ctx?.trustedPhoneNumbers ?? [];
@@ -31,13 +37,41 @@ export function TwoFactorModal({ open, ctx, onCancel, serverError, onRetry }: Tw
   // Reset state on open/close
   useEffect(() => {
     if (open) {
-      setMode('device');
+      const startMode: Mode = initialMode ?? 'choose';
+      setMode(startMode);
       setCode('');
       setLocalError(null);
       setSmsSent(false);
       setSmsBusy(false);
       setVerifyBusy(false);
       setSelectedPhone(phones.length > 0 ? phones[0] : null);
+      // Auto-trigger the pre-selected method
+      if (startMode === 'device' && ctx) {
+        const t = window.setTimeout(() => {
+          void ctx.triggerDevicePush().catch((err) => {
+            setLocalError(err instanceof Error ? err.message : 'Failed to trigger device push');
+          });
+        }, 100);
+        return () => window.clearTimeout(t);
+      }
+      if (startMode === 'sms' && ctx && phones.length > 0) {
+        // Auto-send SMS to the first phone number (user pre-selected SMS at Sign In)
+        const t = window.setTimeout(() => {
+          if (smsBusyRef.current) return;
+          smsBusyRef.current = true;
+          setSmsBusy(true);
+          setLocalError(null);
+          void ctx.requestSms(phones[0].id).then(() => {
+            setSmsSent(true);
+          }).catch((err) => {
+            setLocalError(err instanceof Error ? err.message : 'Failed to send SMS');
+          }).finally(() => {
+            smsBusyRef.current = false;
+            setSmsBusy(false);
+          });
+        }, 100);
+        return () => window.clearTimeout(t);
+      }
       const timer = window.setTimeout(() => {
         inputRef.current?.focus();
         inputRef.current?.select();
@@ -66,6 +100,11 @@ export function TwoFactorModal({ open, ctx, onCancel, serverError, onRetry }: Tw
     setMode('device');
     setCode('');
     setLocalError(null);
+    if (ctx) {
+      void ctx.triggerDevicePush().catch((err) => {
+        setLocalError(err instanceof Error ? err.message : 'Failed to trigger device push');
+      });
+    }
   };
 
   const handleRequestSms = async () => {
@@ -125,7 +164,27 @@ export function TwoFactorModal({ open, ctx, onCancel, serverError, onRetry }: Tw
         Two-Factor Authentication
       </h2>
 
-      {mode === 'device' ? (
+      {mode === 'choose' ? (
+        <>
+          <p className="mt-1.5 text-[13px] leading-[1.55] text-muted">
+            你的 Apple ID 有在 iPhone / Mac 上登入嗎？請選擇驗證方式：
+          </p>
+          <div className="mt-5 grid gap-2">
+            <Button variant="primary" onClick={switchToDevice}>
+              有，在裝置上收驗證碼
+            </Button>
+            {phones.length > 0 && (
+              <Button variant="ghost" onClick={switchToSms}>
+                沒有，用簡訊驗證碼
+              </Button>
+            )}
+          </div>
+          <p className="mt-2 min-h-[18px] text-[12px] text-[var(--color-danger)]">{displayError ?? ''}</p>
+          <div className="mt-4">
+            <Button variant="ghost" onClick={onCancel}>Cancel</Button>
+          </div>
+        </>
+      ) : mode === 'device' ? (
         <>
           <p className="mt-1.5 text-[13px] leading-[1.55] text-muted">
             Enter the verification code from your trusted Apple device or Mac.
@@ -168,15 +227,13 @@ export function TwoFactorModal({ open, ctx, onCancel, serverError, onRetry }: Tw
             )}
           </div>
 
-          {phones.length > 0 && (
-            <button
+          <button
               type="button"
-              onClick={switchToSms}
+              onClick={() => { setMode('choose'); setCode(''); setLocalError(null); }}
               className="mt-3 w-full text-center text-[12px] text-muted underline underline-offset-2 hover:text-ink transition-colors"
             >
-              Get SMS instead →
+              ← 重新選擇驗證方式
             </button>
-          )}
         </>
       ) : (
         <>
@@ -216,7 +273,7 @@ export function TwoFactorModal({ open, ctx, onCancel, serverError, onRetry }: Tw
 
           {!smsSent ? (
             <div className="mt-2 grid grid-cols-2 gap-2">
-              <Button variant="ghost" onClick={switchToDevice}>Back</Button>
+              <Button variant="ghost" onClick={() => { setMode('choose'); setCode(''); setLocalError(null); setSmsSent(false); }}>← 重新選擇</Button>
               <Button
                 variant="primary"
                 busy={smsBusy}

@@ -560,7 +560,11 @@ class AppleAuth {
     }
     const status = completeResponse["Status"];
     const authType = status?.["au"];
-    if (authType === "trustedDeviceSecondaryAuth") {
+    // Log the auth type for debugging (helps identify non-standard 2FA flows)
+    if (authType && authType !== "trustedDeviceSecondaryAuth") {
+      console.log(`[altsign] 2FA required with authType: ${authType} (not trustedDeviceSecondaryAuth)`);
+    }
+    if (authType === "trustedDeviceSecondaryAuth" || (authType && authType.toLowerCase().includes("secondaryauth"))) {
       if (!verificationHandler) {
         throw new Error("Two-factor authentication required but no verification handler provided");
       }
@@ -620,7 +624,30 @@ class AppleAuth {
         "X-Apple-I-TimeZone": data.timeZone
       });
       const headers = buildHeaders(freshData);
-      await this.fetch.get("https://gsa.apple.com/auth/verify/trusteddevice", headers);
+      // NOTE (2026-09-23): Do NOT auto-trigger the trusteddevice push here.
+      // The UI now lets the user choose device vs SMS first; the push is
+      // triggered on demand via triggerDevicePush() below. Auto-triggering
+      // caused Apple to send both a device push AND auto-fallback SMS,
+      // confusing users with two different codes.
+      const triggerDevicePush = async () => {
+        let pushData = freshData;
+        if (refreshAnisette) {
+          try {
+            pushData = await refreshAnisette();
+          } catch {
+            // Fall back to freshData if refresh fails
+          }
+        }
+        await this.fetch.get("https://gsa.apple.com/auth/verify/trusteddevice", buildHeaders(pushData));
+      };
+      // Fetch trusted phone numbers for SMS 2FA (isideload does this so the
+      // UI can offer SMS as a fallback). Non-fatal if it fails.
+      let phoneNumbers = [];
+      try {
+        phoneNumbers = await this.fetchTrustedPhoneNumbers(dsid, idmsToken, freshData);
+      } catch {
+        // SMS option will be hidden if we can't get the numbers
+      }
       return await new Promise((resolve) => {
         const submitCode = async (code) => {
           try {
@@ -647,8 +674,36 @@ class AppleAuth {
             resolve(false);
           }
         };
+        const requestSms = async (phoneId) => {
+          let smsData = freshData;
+          if (refreshAnisette) {
+            try {
+              smsData = await refreshAnisette();
+            } catch {
+              // Fall back to freshData if refresh fails
+            }
+          }
+          await this.requestSmsCode(dsid, idmsToken, smsData, phoneId);
+        };
+        const submitSmsCode = async (phoneId, code) => {
+          let smsData = freshData;
+          if (refreshAnisette) {
+            try {
+              smsData = await refreshAnisette();
+            } catch {
+              // Fall back to freshData if refresh fails
+            }
+          }
+          const ok = await this.submitSmsCode(dsid, idmsToken, smsData, phoneId, code);
+          resolve(ok);
+        };
         try {
-          verificationHandler(submitCode);
+          verificationHandler(submitCode, {
+            trustedPhoneNumbers: phoneNumbers,
+            requestSms,
+            submitSmsCode,
+            triggerDevicePush,
+          });
         } catch {
           resolve(false);
         }
@@ -656,6 +711,112 @@ class AppleAuth {
     } catch {
       return false;
     }
+  }
+  /**
+   * SMS 2FA support (from isideload's apple_account.rs).
+   * Three endpoints, all JSON (unlike the trusted-device plist flow):
+   *   GET  /auth                        -> trusted phone numbers
+   *   PUT  /auth/verify/phone           -> send SMS code
+   *   POST /auth/verify/phone/securitycode -> submit SMS code
+   * Uses the same 2FA headers as the trusted-device flow.
+   */
+  buildSmsHeaders(dsid, idmsToken, anisetteData) {
+    const identityToken = `${dsid}:${idmsToken}`;
+    const encodedToken = btoa(identityToken);
+    return {
+      "Content-Type": "application/json",
+      "Accept": "application/json",
+      "User-Agent": "Xcode",
+      "Accept-Language": "en-us",
+      "X-Apple-App-Info": "com.apple.gs.xcode.auth",
+      "X-Xcode-Version": "11.2 (11B41)",
+      "X-Apple-Identity-Token": encodedToken,
+      "X-Apple-I-MD-M": anisetteData.machineID,
+      "X-Apple-I-MD": anisetteData.oneTimePassword,
+      "X-Apple-I-MD-LU": anisetteData.localUserID,
+      "X-Apple-I-MD-RINFO": String(anisetteData.routingInfo),
+      "X-Mme-Device-Id": anisetteData.deviceUniqueIdentifier,
+      "X-MMe-Client-Info": anisetteData.deviceDescription,
+      "X-Apple-I-Client-Time": this.formatDate(anisetteData.date),
+      "X-Apple-Locale": anisetteData.locale,
+      "X-Apple-I-TimeZone": anisetteData.timeZone
+    };
+  }
+  async fetchTrustedPhoneNumbers(dsid, idmsToken, anisetteData) {
+    const headers = this.buildSmsHeaders(dsid, idmsToken, anisetteData);
+    const resp = await this.fetch.get("https://gsa.apple.com/auth", headers);
+    const text = await resp.text();
+    let data;
+    try {
+      data = JSON.parse(text);
+    } catch {
+      throw new Error(`Failed to fetch trusted phone numbers (HTTP ${resp.status})`);
+    }
+    const numbers = data.trustedPhoneNumbers || [];
+    return numbers.map((n) => ({
+      id: n.id,
+      numberWithDialCode: n.numberWithDialCode || "",
+      // isideload uses lastTwoDigits; our UI shows an obfuscated number.
+      obfuscatedNumber: n.lastTwoDigits ? `••••${n.lastTwoDigits}` : (n.numberWithDialCode || ""),
+      pushMode: n.pushMode || ""
+    }));
+  }
+  async requestSmsCode(dsid, idmsToken, anisetteData, phoneId) {
+    const headers = this.buildSmsHeaders(dsid, idmsToken, anisetteData);
+    const body = JSON.stringify({ phoneNumber: { id: phoneId }, mode: "sms" });
+    const resp = await this.fetch.put("https://gsa.apple.com/auth/verify/phone", body, headers);
+    // HTTP 412 means there's already an active SMS challenge; treat as success
+    // and let the user enter the code they received (isideload PR #9).
+    if (resp.status === 412) {
+      return;
+    }
+    // HTTP 423/429: Apple is rate-limiting SMS sends. The user may already
+    // have a valid code from a previous send, so let them enter it instead
+    // of blocking on the send failure.
+    if (resp.status === 423 || resp.status === 429) {
+      return;
+    }
+    const text = await resp.text();
+    if (!resp.ok) {
+      let errCode;
+      try {
+        errCode = JSON.parse(text).errorCode;
+      } catch {
+        // ignore parse errors
+      }
+      if (errCode === -28248) {
+        throw new Error("This phone number cannot receive verification codes right now. Try another method.");
+      }
+      if (errCode === -22979 || errCode === -22981) {
+        // Rate limited; keep the selected number and let the user enter a code.
+        return;
+      }
+      throw new Error(`Failed to send SMS (HTTP ${resp.status})`);
+    }
+  }
+  async submitSmsCode(dsid, idmsToken, anisetteData, phoneId, code) {
+    const headers = this.buildSmsHeaders(dsid, idmsToken, anisetteData);
+    const body = JSON.stringify({
+      securityCode: { code: code.trim() },
+      phoneNumber: { id: phoneId },
+      mode: "sms"
+    });
+    const resp = await this.fetch.post("https://gsa.apple.com/auth/verify/phone/securitycode", body, headers);
+    const text = await resp.text();
+    let data;
+    try {
+      data = JSON.parse(text);
+    } catch {
+      throw new Error(`Invalid server response (HTTP ${resp.status})`);
+    }
+    const errorCode = data.errorCode;
+    if (errorCode === 0 || errorCode === undefined) {
+      return true;
+    }
+    if (errorCode === -21669) {
+      throw new Error("Incorrect verification code. Please try again.");
+    }
+    throw new Error(`SMS verification failed (error ${errorCode})`);
   }
   async fetchAuthToken(adsid, idmsToken, c, sk, clientDictionary, anisetteData) {
     const apps = ["com.apple.gs.xcode.auth"];
@@ -791,6 +952,9 @@ class Fetch {
   }
   async post(url, body, headers = {}) {
     return this.request("POST", url, headers, body);
+  }
+  async put(url, body, headers = {}) {
+    return this.request("PUT", url, headers, body);
   }
   async delete(url, headers = {}) {
     return this.request("DELETE", url, headers);
