@@ -7,7 +7,7 @@ import {
   type FastbootCallbacks,
 } from '../lib/fastboot';
 
-const MOTOROLA_UNLOCK_URL = 'https://en-us.support.motorola.com/app/standalone/bootloader/unlock-your-device-b';
+const MOTOROLA_UNLOCK_URL = 'https://motorola-global-portal.custhelp.com/app/standalone/bootloader/unlock-your-device-b';
 
 type Step = 1 | 2 | 3 | 4;
 
