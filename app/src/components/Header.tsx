@@ -65,6 +65,14 @@ export function Header({ currentPage, onNavigate }: HeaderProps) {
           >
             Refresh
           </button>
+          <button
+            type="button"
+            className="seg-btn"
+            data-active={currentPage === 'moto-unlock'}
+            onClick={() => onNavigate('moto-unlock')}
+          >
+            Moto Unlock
+          </button>
         </nav>
       </div>
     </header>

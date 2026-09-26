@@ -13,6 +13,7 @@ import { SignPage } from './components/SignPage';
 import { PairingPage } from './components/PairingPage';
 import { DirectInstallPage } from './components/DirectInstallPage';
 import { RefreshPage, type RefreshRow } from './components/RefreshPage';
+import { MotoUnlockPage } from './components/MotoUnlockPage';
 import { TrustModal, type TrustModalState } from './components/TrustModal';
 import { TwoFactorModal } from './components/TwoFactorModal';
 import { ProgressCard } from './components/ProgressCard';
@@ -995,6 +996,8 @@ export function App() {
             onDismissResult={() => setRefreshResult(null)}
             log={refreshLog}
           />
+        ) : currentPage === 'moto-unlock' ? (
+          <MotoUnlockPage />
         ) : (
           <SignPage
             file={selectedIpaFile}
