@@ -18,6 +18,8 @@ import {
   signIPA,
   type AnisetteData as AltAnisetteData,
   type AppleAPISession,
+  type AppGroup as AltAppGroup,
+  type AppID as AltAppID,
   type Certificate as AltCertificate,
   type Device as AltDevice,
   type Team as AltTeam,
@@ -120,7 +122,7 @@ const CERT_LIMIT_RESULT_CODE = '7460';
 
 let apiInstance: AppleAPI | null = null;
 
-function getApi(log?: (message: string) => void): AppleAPI {
+export function getApi(log?: (message: string) => void): AppleAPI {
   if (!apiInstance) {
     apiInstance = new AppleAPI(createAppleFetch(log));
   }
@@ -142,7 +144,7 @@ function toAltAnisette(data: AnisetteData): AltAnisetteData {
   };
 }
 
-function toAltTeam(context: AppleDeveloperContext): AltTeam {
+export function toAltTeam(context: AppleDeveloperContext): AltTeam {
   return {
     identifier: context.team.identifier,
     name: context.team.name,
@@ -155,7 +157,7 @@ function toAltTeam(context: AppleDeveloperContext): AltTeam {
   };
 }
 
-function toSession(context: AppleDeveloperContext): AppleAPISession {
+export function toSession(context: AppleDeveloperContext): AppleAPISession {
   return {
     dsid: context.session.dsid,
     authToken: context.session.authToken,
@@ -395,6 +397,70 @@ interface IpaInfo {
 }
 
 /**
+ * Ensures the App Group exists on the developer portal, creates it if not.
+ * Returns the AppGroup. Matches isideload's ensure_app_group.
+ */
+async function ensureAppGroup(
+  api: AppleAPI,
+  session: AppleAPISession,
+  team: AltTeam,
+  groupIdentifier: string,
+  appName: string,
+  log: (message: string) => void,
+): Promise<AltAppGroup> {
+  const groups = await api.fetchAppGroups(session, team);
+  const existing = groups.find((g) => g.groupIdentifier === groupIdentifier);
+  if (existing) {
+    log(`sign: App Group already exists: ${groupIdentifier}`);
+    return existing;
+  }
+  log(`sign: creating App Group: ${groupIdentifier}...`);
+  return await api.addAppGroup(session, team, appName, groupIdentifier);
+}
+
+/**
+ * Enables the App Groups capability on an App ID and assigns the App Group.
+ * Matches isideload's ensure_group_feature + assign_app_group.
+ * Feature key APG3427HIY is the App Groups capability.
+ *
+ * IMPORTANT: updateAppId must send ONLY the single APG3427HIY flag
+ * (isideload's exact body). Re-sending the App ID's whole feature bag makes
+ * Apple reject the call with resultCode 4100 (verified 2026-09-28: single
+ * flag returns 0 and the capability takes effect on free accounts).
+ * assignApplicationGroupToAppId takes applicationGroups as a plain String,
+ * not an array.
+ */
+async function provisionAppGroupForAppId(
+  api: AppleAPI,
+  session: AppleAPISession,
+  team: AltTeam,
+  appId: AltAppID,
+  appGroup: AltAppGroup,
+  log: (message: string) => void,
+): Promise<void> {
+  log(`sign: enabling App Groups capability for ${appId.bundleIdentifier}...`);
+  const updated = await api.updateAppIdSingleFlag(session, team, appId);
+  if (updated.resultCode !== 0) {
+    throw new Error(
+      `Apple rejected the App Groups capability for ${appId.bundleIdentifier}: ` +
+      `${updated.userString ?? 'unknown error'} (${String(updated.resultCode)})`,
+    );
+  }
+  // Verify Apple actually enabled the feature; the update can return 200
+  // without the flag taking effect.
+  if (!updated.appId?.features?.APG3427HIY) {
+    throw new Error(
+      `Apple did not enable the App Groups capability for ${appId.bundleIdentifier} ` +
+      `(updateAppId.action returned success but APG3427HIY is not set on the App ID)`,
+    );
+  }
+  log(`sign: App Groups capability enabled for ${appId.bundleIdentifier}`);
+  log(`sign: assigning App Group to ${appId.bundleIdentifier}...`);
+  await api.assignAppGroupToAppId(session, team, appId, appGroup);
+  log(`sign: App Group assigned to ${appId.bundleIdentifier}`);
+}
+
+/**
  * Provisions App Extensions (.appex) by registering dedicated App IDs,
  * downloading provisioning profiles, and embedding them into each .appex.
  * Returns the repacked IPA bytes. If no .appex is found, returns the input unchanged.
@@ -407,6 +473,7 @@ async function embedExtensionProfiles(
   originalBundleId: string,
   outputBundleId: string,
   log: (m: string) => void,
+  appGroup: AltAppGroup | null = null,
 ): Promise<Uint8Array> {
   const entries = unzipSync(ipaBytes);
   const names = Object.keys(entries);
@@ -453,6 +520,16 @@ async function embedExtensionProfiles(
       const displayName = plistString(info, 'CFBundleDisplayName') || plistString(info, 'CFBundleName') || 'Extension';
       extAppId = await api.addAppID(session, team, displayName, newExtId);
       appIds.push(extAppId);
+    }
+    // If the main app uses an App Group, provision it for the extension too
+    // (its profile must carry the group entitlement). A per-extension failure
+    // must not kill the whole signing run.
+    if (appGroup) {
+      try {
+        await provisionAppGroupForAppId(api, session, team, extAppId, appGroup, log);
+      } catch (e) {
+        log(`sign: App Group provisioning for extension failed (continuing): ${e instanceof Error ? e.message : e}`);
+      }
     }
     const extProfile = await api.fetchProvisioningProfile(session, team, extAppId);
     // Embed the profile into the .appex.
@@ -739,6 +816,23 @@ export async function signIpaWithAppleContext(
     log('sign: App ID already exists');
   }
 
+  // Detect special apps early so the App Group can be provisioned BEFORE
+  // downloading the provisioning profile (the profile must include the
+  // App Group entitlement, otherwise iOS denies the container access).
+  // Matches isideload's apply_special_app_behavior (minus StikStore, which
+  // has no App Group). Group identifier formula matches the ALTAppGroups
+  // injection below: SideStoreLc uses group.com.SideStore.SideStore.<TEAM>,
+  // others use group.<bundleId>.<TEAM>.
+  const earlySpecialApp = detectSpecialApp(info.bundleId, unzipSync(ipaBytes));
+  let appGroup: AltAppGroup | null = null;
+  if (earlySpecialApp && earlySpecialApp !== 'StikStore') {
+    const groupIdentifier = earlySpecialApp === 'SideStoreLc'
+      ? `group.com.SideStore.SideStore.${team.identifier}`
+      : `group.${info.bundleId}.${team.identifier}`;
+    appGroup = await ensureAppGroup(api, session, team, groupIdentifier, info.bundleName, log);
+    await provisionAppGroupForAppId(api, session, team, appId, appGroup, log);
+  }
+
   log('sign: downloading provisioning profile...');
   const profile = await api.fetchProvisioningProfile(session, team, appId);
 
@@ -746,7 +840,7 @@ export async function signIpaWithAppleContext(
   // profile, otherwise iOS refuses to launch the host app ("The app extension
   // is missing a valid provisioning profile").
   let ipaForSigning = await embedExtensionProfiles(
-    ipaBytes, api, session, team, info.bundleId, outputBundleId, log,
+    ipaBytes, api, session, team, info.bundleId, outputBundleId, log, appGroup,
   );
 
   // For special apps (SideStore/AltStore/StikStore/SideStoreLc): inject the

@@ -1313,6 +1313,39 @@ class AppleAPI {
     }
     return this.parseAppID(appIdDict);
   }
+  // Test helper (App Group 4100 experiment): update an App ID enabling ONLY the
+  // App Groups capability flag, mirroring isideload's ensure_group_feature.
+  // Returns the raw result instead of throwing so the test page can report it.
+  async updateAppIdSingleFlag(session, team, appId) {
+    const headers = this.buildHeaders(session, team);
+    const body = this.buildRequestBody({
+      appIdId: appId.identifier,
+      APG3427HIY: true
+    }, team);
+    const resp = await this.fetch.post(`${this.baseURL}ios/updateAppId.action?clientId=${CLIENT_ID2}`, body, headers);
+    const text = await resp.text();
+    const plist = parsePlist(text);
+    const appIdDict = plist["appId"];
+    return {
+      resultCode: plist["resultCode"],
+      userString: plist["userString"] ?? plist["resultString"] ?? null,
+      appId: appIdDict ? this.parseAppID(appIdDict) : null
+    };
+  }
+  // Test helper: delete a throwaway App ID (cleanup after the experiment).
+  async deleteAppId(session, team, appId) {
+    const headers = this.buildHeaders(session, team);
+    const body = this.buildRequestBody({
+      appIdId: appId.identifier
+    }, team);
+    const resp = await this.fetch.post(`${this.baseURL}ios/deleteAppId.action?clientId=${CLIENT_ID2}`, body, headers);
+    const text = await resp.text();
+    const plist = parsePlist(text);
+    return {
+      resultCode: plist["resultCode"],
+      userString: plist["userString"] ?? plist["resultString"] ?? null
+    };
+  }
   async fetchAppGroups(session, team) {
     const headers = this.buildHeaders(session, team);
     const body = this.buildRequestBody({}, team);
@@ -1324,6 +1357,54 @@ class AppleAPI {
       return [];
     }
     return groupsArray.map((groupDict) => this.parseAppGroup(groupDict));
+  }
+  // App Group support (matches isideload's AppGroupsApi + ensure_group_feature).
+  // - addApplicationGroup.action: teamId, name, identifier
+  // - updateAppId uses updateAppIdSingleFlag above (only APG3427HIY: true)
+  // - assignApplicationGroupToAppId.action: teamId, appIdId, applicationGroups
+  //   where applicationGroups is a plain String (the group's "applicationGroup"
+  //   value), NOT an array.
+  async addAppGroup(session, team, name, groupIdentifier) {
+    const headers = this.buildHeaders(session, team);
+    const sanitizedName = name.normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-zA-Z0-9\s]/g, "");
+    const body = this.buildRequestBody({
+      teamId: team.identifier,
+      name: sanitizedName,
+      identifier: groupIdentifier
+    });
+    const resp = await this.fetch.post(`${this.baseURL}ios/addApplicationGroup.action?clientId=${CLIENT_ID2}`, body, headers);
+    const text = await resp.text();
+    const plist = parsePlist(text);
+    const resultCode = plist["resultCode"];
+    if (resultCode !== undefined && resultCode !== 0) {
+      const errorStr = plist["userString"] ?? plist["resultString"] ?? "Unknown error";
+      throw new Error(`Failed to add App Group: ${errorStr} (${resultCode})`);
+    }
+    const groupDict = plist["applicationGroup"];
+    if (!groupDict) {
+      throw new Error("Failed to add App Group: no applicationGroup in response");
+    }
+    return this.parseAppGroup(groupDict);
+  }
+  async assignAppGroupToAppId(session, team, appId, appGroup) {
+    const groupValue = appGroup.identifier;
+    if (!groupValue) {
+      throw new Error("Failed to assign App Group: missing applicationGroup value in group record");
+    }
+    const headers = this.buildHeaders(session, team);
+    const body = this.buildRequestBody({
+      teamId: team.identifier,
+      appIdId: appId.identifier,
+      applicationGroups: groupValue
+    });
+    const resp = await this.fetch.post(`${this.baseURL}ios/assignApplicationGroupToAppId.action?clientId=${CLIENT_ID2}`, body, headers);
+    const text = await resp.text();
+    const plist = parsePlist(text);
+    const resultCode = plist["resultCode"];
+    if (resultCode !== undefined && resultCode !== 0) {
+      const errorStr = plist["userString"] ?? plist["resultString"] ?? "Unknown error";
+      throw new Error(`Failed to assign App Group to App ID: ${errorStr} (${resultCode})`);
+    }
   }
   async fetchProvisioningProfile(session, team, appID) {
     const headers = this.buildHeaders(session, team);
