@@ -128,6 +128,67 @@ export async function provisionAnisette(log?: (message: string) => void): Promis
 }
 
 export async function getAnisetteData(log?: (message: string) => void): Promise<AnisetteData> {
+  try {
+    return await getLocalAnisetteData(log);
+  } catch (error) {
+    log?.(
+      `anisette: local provisioning failed ` +
+      `(${error instanceof Error ? error.message : String(error)}), ` +
+      `falling back to remote anisette server...`,
+    );
+    return await getRemoteAnisetteData(log);
+  }
+}
+
+function headersToAnisetteData(headers: Record<string, string>): AnisetteData {
+  return {
+    machineID: headers['X-Apple-I-MD-M'],
+    oneTimePassword: headers['X-Apple-I-MD'],
+    localUserID: headers['X-Apple-I-MD-LU'],
+    routingInfo: Number.parseInt(headers['X-Apple-I-MD-RINFO'] ?? '0', 10),
+    deviceUniqueIdentifier: headers['X-Mme-Device-Id'],
+    deviceDescription: headers['X-MMe-Client-Info'],
+    deviceSerialNumber: headers['X-Apple-I-SRL-NO'] || '0',
+    date: new Date(headers['X-Apple-I-Client-Time']),
+    locale: headers['X-Apple-Locale'],
+    timeZone: headers['X-Apple-I-TimeZone'],
+  };
+}
+
+/**
+ * Fallback: fetch anisette data from the user's own anisette-v3-server via
+ * the same-origin /anisette-remote/ proxy (the upstream sends no CORS
+ * headers, so browsers can't hit it directly). Used only when local WASM
+ * provisioning fails.
+ */
+async function getRemoteAnisetteData(log?: (message: string) => void): Promise<AnisetteData> {
+  log?.('anisette: requesting remote anisette data...');
+  // Render's free tier sleeps when idle; the first hit can take ~60s to
+  // wake the service. Manual timeout (AbortSignal.timeout isn't on iOS 15).
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 90000);
+  let resp: Response;
+  try {
+    resp = await fetch('/anisette-remote/', { signal: controller.signal });
+  } catch (e) {
+    throw new Error(
+      `anisette: remote server unreachable (${e instanceof Error ? e.message : String(e)})`,
+    );
+  } finally {
+    clearTimeout(timer);
+  }
+  if (!resp.ok) {
+    throw new Error(`anisette: remote server returned HTTP ${resp.status}`);
+  }
+  const headers = (await resp.json()) as Record<string, string>;
+  if (!isPlausibleOtp(headers['X-Apple-I-MD'])) {
+    throw new Error('anisette: remote server returned an invalid OTP');
+  }
+  log?.('anisette: using remote anisette data');
+  return headersToAnisetteData(headers);
+}
+
+async function getLocalAnisetteData(log?: (message: string) => void): Promise<AnisetteData> {
   const anisette = await initAnisette(log);
   let headers: Record<string, string>;
   try {
@@ -152,18 +213,7 @@ export async function getAnisetteData(log?: (message: string) => void): Promise<
       throw new Error('anisette: failed to generate a valid OTP');
     }
   }
-  return {
-    machineID: headers['X-Apple-I-MD-M'],
-    oneTimePassword: headers['X-Apple-I-MD'],
-    localUserID: headers['X-Apple-I-MD-LU'],
-    routingInfo: Number.parseInt(headers['X-Apple-I-MD-RINFO'] ?? '0', 10),
-    deviceUniqueIdentifier: headers['X-Mme-Device-Id'],
-    deviceDescription: headers['X-MMe-Client-Info'],
-    deviceSerialNumber: headers['X-Apple-I-SRL-NO'] || '0',
-    date: new Date(headers['X-Apple-I-Client-Time']),
-    locale: headers['X-Apple-Locale'],
-    timeZone: headers['X-Apple-I-TimeZone'],
-  };
+  return headersToAnisetteData(headers);
 }
 
 /** True when cached provisioning data exists (no WASM load performed). */

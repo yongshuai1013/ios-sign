@@ -28,6 +28,10 @@ wisp.options.port_whitelist = [ALLOWED_TCP_PORT];
 wisp.options.allow_direct_ip = false;
 wisp.options.allow_private_ips = false;
 wisp.options.allow_loopback_ips = false;
+
+// Upstream for the /anisette-remote/ fallback endpoint (user's own
+// anisette-v3-server). Allowlisted to this single host — not an open proxy.
+const REMOTE_ANISETTE_URL = "https://anisette-v3-server-42tq.onrender.com/";
 wisp.options.allow_tcp_streams = true;
 wisp.options.allow_udp_streams = false;
 wisp.options.wisp_version = 1;
@@ -305,6 +309,34 @@ export default {
         service: "sideimpactor-backend",
         now: new Date().toISOString(),
       });
+    }
+
+    // Remote anisette fallback. The user's own anisette-v3-server on Render
+    // does not send CORS headers, so browsers can't fetch it directly.
+    // This same-origin endpoint proxies a single GET to the allowlisted
+    // upstream and returns its JSON verbatim. Used only when local WASM
+    // anisette provisioning fails (see anisette-service.ts).
+    if (url.pathname === "/anisette-remote/") {
+      if (request.method !== "GET") {
+        return json(405, { ok: false, error: "method not allowed" });
+      }
+      try {
+        const upstream = await fetch(REMOTE_ANISETTE_URL, {
+          headers: { "accept": "application/json" },
+        });
+        const text = await upstream.text();
+        if (!upstream.ok) {
+          return json(502, { ok: false, error: `upstream ${upstream.status}` });
+        }
+        // Validate it's actually anisette JSON before handing it out.
+        const data = JSON.parse(text) as Record<string, unknown>;
+        if (typeof data["X-Apple-I-MD"] !== "string" || typeof data["X-Apple-I-MD-M"] !== "string") {
+          return json(502, { ok: false, error: "upstream did not return anisette data" });
+        }
+        return json(200, data);
+      } catch (e) {
+        return json(502, { ok: false, error: e instanceof Error ? e.message : "upstream fetch failed" });
+      }
     }
 
     // Apple API reverse proxy. Browsers cannot open raw TLS sockets to Apple,
