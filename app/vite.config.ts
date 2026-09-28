@@ -16,6 +16,17 @@ export default defineConfig({
       // Use our vendored altsign.js with fixed 2FA (refresh anisette before
       // /trusteddevice and /validate, like isideload does).
       'altsign.js': path.resolve(__dirname, 'src/vendor/altsign.js'),
+      // Vendored @lbr77/anisette-js (see src/vendor/anisette-js/README.md);
+      // resolves to the package's own `browser` export condition.
+      '@lbr77/anisette-js': path.resolve(__dirname, 'src/vendor/anisette-js/browser.js'),
+      // Vendored @lbr77/zsign-wasm-resigner-wrapper (see
+      // src/vendor/zsign-wasm-resigner-wrapper/README.md); used by the
+      // vendored altsign.js. Resolves to the package's own `browser`
+      // export condition.
+      '@lbr77/zsign-wasm-resigner-wrapper': path.resolve(
+        __dirname,
+        'src/vendor/zsign-wasm-resigner-wrapper/dist/browser.js',
+      ),
     },
   },
   server: {

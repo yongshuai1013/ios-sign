@@ -1,6 +1,6 @@
 {
   "dependencies": {
-    "@mercuryworkshop/wisp-js": "^0.5.0"
+    "ipaddr.js": "^2.5.0"
   },
   "description": "Cloudflare Worker backend for SideImpactor: WISP-over-WebSocket TCP proxy restricted to Apple servers",
   "devDependencies": {
@@ -15,8 +15,7 @@
     "cf-typegen": "wrangler types",
     "deploy": "wrangler deploy",
     "dev": "wrangler dev",
-    "test": "bun test",
-    "postinstall": "node scripts/patch-wisp-js.mjs"
+    "test": "bun test"
   },
   "type": "module",
   "version": "0.1.0"
