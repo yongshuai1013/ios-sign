@@ -11,7 +11,7 @@
  */
 
 import { connect } from "cloudflare:sockets";
-import { server as wisp } from "./vendor/wisp-js/src/entrypoints/server.mjs";
+import { server as wisp } from "@mercuryworkshop/wisp-js/server";
 import {
   ALLOWED_TCP_PORT,
   APPLE_HOST_PATTERNS,
