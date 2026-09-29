@@ -1,9 +1,10 @@
 /**
- * Anisette provisioning via `@lbr77/anisette-js` (WASM).
+ * Anisette provisioning via our own WASM build (compiled 2026-09-29 from
+ * lbr77/anisette-js Rust source + lbr77/unicorn tci-emscripten; behavior
+ * verified equivalent to the official prebuilt).
  *
- * The Emscripten glue is served from `/assets/anisette_rs.js` with its
- * binary at `/assets/anisette_rs.wasm` (copied into `public/assets/`
- * because the npm package does not ship the `.wasm`). The two Android
+ * The Emscripten glue is served from `/assets/anisette_rs.js` (SINGLE_FILE:
+ * the .wasm binary is embedded, no separate file needed). The two Android
  * native libraries are served from `/anisette/*.so`. Provisioning HTTP
  * goes through the routed transport in `lib/network.ts` (libcurl-WASM
  * over WISP, falling back to direct fetch).
@@ -74,7 +75,8 @@ function isPlausibleOtp(otpBase64: string | undefined): boolean {
   }
 }
 
-/** Loads the Emscripten glue directly, pinning the .wasm to /assets/. */
+/** Loads the Emscripten glue directly (SINGLE_FILE build: locateFile is a
+ * no-op safeguard, the .wasm binary is embedded in the glue). */
 async function loadWasmModule(): Promise<unknown> {
   const glue = (await import(/* @vite-ignore */ GLUE_URL)) as {
     default: (config: Record<string, unknown>) => Promise<unknown>;
