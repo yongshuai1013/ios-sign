@@ -9,6 +9,7 @@ import {
   DIRECT_INSTALL_PAGE_HASH,
   REFRESH_PAGE_HASH,
   MOTO_UNLOCK_PAGE_HASH,
+  APPIDS_PAGE_HASH,
 } from './router';
 
 describe('hash routing', () => {
@@ -19,6 +20,7 @@ describe('hash routing', () => {
     expect(resolvePageFromHash(DIRECT_INSTALL_PAGE_HASH)).toBe('direct-install');
     expect(resolvePageFromHash(REFRESH_PAGE_HASH)).toBe('refresh');
     expect(resolvePageFromHash(MOTO_UNLOCK_PAGE_HASH)).toBe('moto-unlock');
+    expect(resolvePageFromHash(APPIDS_PAGE_HASH)).toBe('appids');
   });
 
   it('falls back to login for unknown or empty hashes', () => {
@@ -28,7 +30,7 @@ describe('hash routing', () => {
   });
 
   it('round-trips page -> hash -> page', () => {
-    for (const page of ['login', 'sign', 'pairing', 'direct-install', 'refresh', 'moto-unlock'] as const) {
+    for (const page of ['login', 'sign', 'pairing', 'direct-install', 'refresh', 'moto-unlock', 'appids'] as const) {
       expect(resolvePageFromHash(pageToHash(page))).toBe(page);
     }
   });
@@ -40,6 +42,7 @@ describe('hash routing', () => {
     expect(isKnownPageHash(DIRECT_INSTALL_PAGE_HASH)).toBe(true);
     expect(isKnownPageHash(REFRESH_PAGE_HASH)).toBe(true);
     expect(isKnownPageHash(MOTO_UNLOCK_PAGE_HASH)).toBe(true);
+    expect(isKnownPageHash(APPIDS_PAGE_HASH)).toBe(true);
     expect(isKnownPageHash('#/login/')).toBe(false);
     expect(isKnownPageHash('')).toBe(false);
   });

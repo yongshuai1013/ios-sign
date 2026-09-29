@@ -73,6 +73,14 @@ export function Header({ currentPage, onNavigate }: HeaderProps) {
           >
             Moto Unlock
           </button>
+          <button
+            type="button"
+            className="seg-btn"
+            data-active={currentPage === 'appids'}
+            onClick={() => onNavigate('appids')}
+          >
+            App IDs
+          </button>
         </nav>
       </div>
     </header>

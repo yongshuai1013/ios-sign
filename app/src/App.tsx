@@ -15,6 +15,7 @@ import { DirectInstallPage } from './components/DirectInstallPage';
 import { RefreshPage, type RefreshRow } from './components/RefreshPage';
 import { MotoUnlockPage } from './components/MotoUnlockPage';
 import { AgTestPage } from './components/AgTestPage';
+import { AppIdsPage } from './components/AppIdsPage';
 import { TrustModal, type TrustModalState } from './components/TrustModal';
 import { TwoFactorModal } from './components/TwoFactorModal';
 import { ProgressCard } from './components/ProgressCard';
@@ -1001,6 +1002,8 @@ export function App() {
           <MotoUnlockPage />
         ) : currentPage === 'ag-test' ? (
           <AgTestPage />
+        ) : currentPage === 'appids' ? (
+          <AppIdsPage />
         ) : (
           <SignPage
             file={selectedIpaFile}
