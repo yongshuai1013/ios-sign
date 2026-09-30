@@ -19,6 +19,7 @@ import {
   isWispPath,
   isWispRoute,
 } from "./wisp-policy";
+import { handleLogin, handleVerify } from "./login-api";
 
 // Restrict the embedded wisp-js server. Belt and braces: wisp-policy.ts
 // exposes the same rules as pure functions for unit tests, while these
@@ -301,6 +302,16 @@ export default {
 
     if (url.pathname === "/healthz") {
       return new Response("ok", { status: 200 });
+    }
+
+    // Login API for PaxSide app (and other clients).
+    // POST /api/login { appleId, password } -> session or 2FA challenge
+    // POST /api/login/verify { token, code } -> session
+    if (url.pathname === "/api/login") {
+      return handleLogin(request, env);
+    }
+    if (url.pathname === "/api/login/verify") {
+      return handleVerify(request, env);
     }
 
     if (url.pathname === "/") {
