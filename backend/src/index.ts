@@ -427,7 +427,7 @@ export default {
         } else {
           // Developer API: from developer_session.rs get_headers()
           // (anisette values + GS token + identity ID from frontend)
-          for (const k of ["x-mme-device-id", "x-apple-i-md", "x-apple-i-md-m", "x-apple-gs-token", "x-apple-i-identity-id", "x-http-method-override"]) {
+          for (const k of ["x-mme-device-id", "x-apple-i-md", "x-apple-i-md-m", "x-apple-i-md-lu", "x-apple-i-md-rinfo", "x-apple-gs-token", "x-apple-i-identity-id", "x-apple-i-client-time", "x-apple-locale", "x-apple-i-timezone", "x-http-method-override"]) {
             const v = fwdHeaders.get(k);
             if (v) isideload.set(k, v);
           }
