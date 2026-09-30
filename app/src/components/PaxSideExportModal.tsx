@@ -27,11 +27,13 @@ export function PaxSideExportModal({ account, onClose }: PaxSideExportModalProps
       return;
     }
     const qrData = JSON.stringify({
-      v: 2,
+      v: 3,
       appleId: payload.appleId,
       dsid: payload.dsid,
       authToken: payload.authToken,
       anisette: payload.anisetteData,
+      teamId: payload.teamId,
+      teamName: payload.teamName,
     });
     setQrText(qrData);
     if (canvasRef.current) {
