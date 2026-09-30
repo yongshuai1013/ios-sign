@@ -1,8 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import QRCode from 'qrcode';
 import { Button } from './ui/Button';
-import { getStoredAccountSession, encodeAnisetteData } from '../lib/account-session';
-import { getAnisetteData } from '../anisette-service';
+import { getStoredAccountSession } from '../lib/account-session';
 import type { StoredAccountSummary } from '../lib/account-session';
 
 interface PaxSideExportModalProps {
@@ -22,38 +21,26 @@ export function PaxSideExportModal({ account, onClose }: PaxSideExportModalProps
   const [copied, setCopied] = useState(false);
 
   useEffect(() => {
-    const run = async () => {
-      const payload = getStoredAccountSession(account.appleId, account.teamId);
-      if (!payload) {
-        setError('No cached session for this account. Please re-login first.');
-        return;
-      }
-      // 生成全新的 anisette（OTP 單次使用，登入時的不再有效）
-      let anisetteData = payload.anisetteData;
-      try {
-        const fresh = await getAnisetteData();
-        anisetteData = encodeAnisetteData(fresh);
-      } catch (e) {
-        // 用舊的繼續，PaxSide 會報錯提示
-        console.warn('Fresh anisette failed, using cached:', e);
-      }
-      const qrData = JSON.stringify({
-        v: 3,
-        appleId: payload.appleId,
-        dsid: payload.dsid,
-        authToken: payload.authToken,
-        anisette: anisetteData,
-        teamId: payload.teamId,
-        teamName: payload.teamName,
+    const payload = getStoredAccountSession(account.appleId, account.teamId);
+    if (!payload) {
+      setError('No cached session for this account. Please re-login first.');
+      return;
+    }
+    const qrData = JSON.stringify({
+      v: 3,
+      appleId: payload.appleId,
+      dsid: payload.dsid,
+      authToken: payload.authToken,
+      anisette: payload.anisetteData,
+      teamId: payload.teamId,
+      teamName: payload.teamName,
+    });
+    setQrText(qrData);
+    if (canvasRef.current) {
+      QRCode.toCanvas(canvasRef.current, qrData, { width: 280, margin: 2 }, (err) => {
+        if (err) setError(`QR generation failed: ${err.message}`);
       });
-      setQrText(qrData);
-      if (canvasRef.current) {
-        QRCode.toCanvas(canvasRef.current, qrData, { width: 280, margin: 2 }, (err) => {
-          if (err) setError(`QR generation failed: ${err.message}`);
-        });
-      }
-    };
-    run();
+    }
   }, [account]);
 
   const copyText = async () => {
