@@ -534,7 +534,10 @@ class AppleAuth {
     const completeResponse = await this.sendAuthRequest(completeParams, anisetteData);
     const M2Base64 = completeResponse["M2"];
     if (!M2Base64) {
-      throw new Error("Invalid server response: missing M2");
+      const keys = Object.keys(completeResponse || {}).join(",");
+      const status = completeResponse?.["Status"];
+      const statusStr = status ? ` Status=${JSON.stringify(status).slice(0,200)}` : "";
+      throw new Error(`Invalid server response: missing M2 (keys: ${keys}${statusStr})`);
     }
     const M2 = Uint8Array.from(atob(M2Base64), (c3) => c3.charCodeAt(0));
     clientWithChallenge.checkM2(M2);
@@ -877,7 +880,11 @@ class AppleAuth {
     const resp = await this.fetch.post("https://gsa.apple.com/grandslam/GsService2", body, headers);
     const text = await resp.text();
     const plist = parsePlist(text);
-    const response = plist["Response"];
+    const response = plist?.["Response"];
+    if (!response) {
+      const preview = (text || "").slice(0, 300).replace(/\s+/g, " ");
+      throw new Error(`Invalid server response: no Response key (HTTP ${resp.status}, body: ${preview})`);
+    }
     const status = response?.["Status"];
     if (status) {
       const errorCode = status["ec"];
