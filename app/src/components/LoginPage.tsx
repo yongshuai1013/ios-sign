@@ -1,6 +1,8 @@
+import { useState } from 'react';
 import { Button } from './ui/Button';
 import { SavedAccountsList } from './SavedAccountsList';
 import { WispSettings } from './WispSettings';
+import { PaxSideExportModal } from './PaxSideExportModal';
 import type { StoredAccountSummary } from '../lib/account-session';
 
 interface LoginPageProps {
@@ -24,6 +26,8 @@ export function LoginPage({
   onAddAccount,
   onGoToSignPage,
 }: LoginPageProps) {
+  const [exportAccount, setExportAccount] = useState<StoredAccountSummary | null>(null);
+
   return (
     <section className="space-y-6 anim-in">
       <div className="flex items-start justify-between gap-4">
@@ -42,7 +46,12 @@ export function LoginPage({
         cachedKeys={cachedAccountKeys}
         onSwitch={onSwitchAccount}
         onDelete={onDeleteAccount}
+        onExportPaxSide={setExportAccount}
       />
+
+      {exportAccount && (
+        <PaxSideExportModal account={exportAccount} onClose={() => setExportAccount(null)} />
+      )}
 
       <WispSettings />
 

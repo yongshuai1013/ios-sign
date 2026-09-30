@@ -118,6 +118,12 @@ function readSessionMap(): Record<string, StoredAccountSessionPayload> {
   }
 }
 
+/** Get the stored session payload (dsid + authToken) for an account, if cached. */
+export function getStoredAccountSession(appleId: string, teamId: string): StoredAccountSessionPayload | null {
+  const map = readSessionMap();
+  return map[accountKey(appleId, teamId)] || null;
+}
+
 export function loadStoredAccountList(): StoredAccountSummary[] {
   const raw = loadText(APPLE_ACCOUNT_LIST_STORAGE_KEY);
   if (!raw) return [];

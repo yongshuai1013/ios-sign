@@ -7,6 +7,7 @@ interface SavedAccountsListProps {
   cachedKeys: Set<string>;
   onSwitch: (summary: StoredAccountSummary) => void;
   onDelete?: (summary: StoredAccountSummary) => void;
+  onExportPaxSide?: (summary: StoredAccountSummary) => void;
 }
 
 function buildKey(summary: StoredAccountSummary): string {
@@ -17,7 +18,7 @@ function formatUpdatedAt(iso: string): string {
   return Number.isNaN(Date.parse(iso)) ? iso : new Date(iso).toLocaleString();
 }
 
-export function SavedAccountsList({ accounts, activeKey, cachedKeys, onSwitch, onDelete }: SavedAccountsListProps) {
+export function SavedAccountsList({ accounts, activeKey, cachedKeys, onSwitch, onDelete, onExportPaxSide }: SavedAccountsListProps) {
   if (accounts.length === 0) {
     return (
       <div className="flex flex-col items-center py-8 text-center">
@@ -50,6 +51,11 @@ export function SavedAccountsList({ accounts, activeKey, cachedKeys, onSwitch, o
                   </Button>
                 )}
                 {isActive && <span className="px-2 text-[11.5px] font-medium text-[var(--color-success)]">Active</span>}
+                {hasCachedSession && onExportPaxSide && (
+                  <Button size="sm" variant="ghost" onClick={() => onExportPaxSide(item)} title="Export session to PaxSide app via QR code">
+                    PaxSide
+                  </Button>
+                )}
                 {onDelete && (
                   <button
                     type="button"
