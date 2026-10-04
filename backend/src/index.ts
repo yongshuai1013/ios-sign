@@ -19,7 +19,7 @@ import {
   isWispPath,
   isWispRoute,
 } from "./wisp-policy";
-import { handleLogin, handleVerify } from "./login-api";
+import { handlePortalProxy } from "./portal-proxy";
 
 // Restrict the embedded wisp-js server. Belt and braces: wisp-policy.ts
 // exposes the same rules as pure functions for unit tests, while these
@@ -304,14 +304,9 @@ export default {
       return new Response("ok", { status: 200 });
     }
 
-    // Login API for PaxSide app (and other clients).
-    // POST /api/login { appleId, password } -> session or 2FA challenge
-    // POST /api/login/verify { token, code } -> session
-    if (url.pathname === "/api/login") {
-      return handleLogin(request, env);
-    }
-    if (url.pathname === "/api/login/verify") {
-      return handleVerify(request, env);
+    // POST /api/portal/ - Developer Portal proxy for PaxSide (fresh anisette server-side)
+    if (url.pathname === "/api/portal/") {
+      return handlePortalProxy(request);
     }
 
     if (url.pathname === "/") {
@@ -427,7 +422,7 @@ export default {
         } else {
           // Developer API: from developer_session.rs get_headers()
           // (anisette values + GS token + identity ID from frontend)
-          for (const k of ["x-mme-device-id", "x-apple-i-md", "x-apple-i-md-m", "x-apple-i-md-lu", "x-apple-i-md-rinfo", "x-apple-gs-token", "x-apple-i-identity-id", "x-apple-i-client-time", "x-apple-locale", "x-apple-i-timezone", "x-http-method-override"]) {
+          for (const k of ["x-mme-device-id", "x-apple-i-md", "x-apple-i-md-m", "x-apple-gs-token", "x-apple-i-identity-id", "x-http-method-override"]) {
             const v = fwdHeaders.get(k);
             if (v) isideload.set(k, v);
           }
