@@ -11,6 +11,7 @@ export default defineConfig({
     exclude: ['altsign.js', '@lbr77/anisette-js', 'libcurl.js', 'libcurl.js/bundled'],
   },
   resolve: {
+    dedupe: ['plist'],
     alias: {
       '@pairing': path.resolve(__dirname, '../src/pairing'),
       // Use our vendored altsign.js with fixed 2FA (refresh anisette before
