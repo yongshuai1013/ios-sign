@@ -17,10 +17,10 @@ jobs:
         uses: oven-sh/setup-bun@v2
 
       - name: Install backend deps
-        run: cd backend && bun install --frozen-lockfile --ignore-scripts
+        run: cd backend && bun install --ignore-scripts
 
       - name: Install frontend deps
-        run: cd app && bun install --frozen-lockfile --ignore-scripts
+        run: cd app && bun install --ignore-scripts
 
       - name: Build frontend
         run: cd app && bunx vite build
