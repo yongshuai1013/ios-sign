@@ -8,7 +8,7 @@ export default defineConfig({
   optimizeDeps: {
     // Emscripten/WASM-heavy modules: keep them out of the pre-bundler so
     // their dynamic `import()` / `locateFile` logic keeps working.
-    exclude: ['altsign.js', '@lbr77/anisette-js', 'libcurl.js', 'libcurl.js/bundled'],
+    exclude: ['altsign.js', '@lbr77/anisette-js', 'libcurl.js', 'libcurl.js/bundled', 'plist'],
   },
   resolve: {
     alias: {
