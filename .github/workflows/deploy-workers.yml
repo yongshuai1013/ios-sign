@@ -17,7 +17,7 @@ jobs:
         uses: oven-sh/setup-bun@v2
 
       - name: Install backend deps
-        run: cd backend && bun install --ignore-scripts
+        run: cd backend && bun install
 
       - name: Deploy to Workers
         uses: cloudflare/wrangler-action@v4
