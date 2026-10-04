@@ -13,8 +13,21 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
+
+      - name: Install frontend deps
+        run: |
+          cd app && npm install
+          ln -sfn "$PWD/node_modules" "$GITHUB_WORKSPACE/node_modules"
+
+      - name: Build frontend
+        run: cd app && npx vite build
 
       - name: Install backend deps
         run: cd backend && bun install
