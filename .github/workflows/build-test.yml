@@ -1,0 +1,27 @@
+name: Build Frontend Test
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'app/**'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install deps
+        run: cd app && npm install
+
+      - name: Build
+        run: cd app && npx vite build
