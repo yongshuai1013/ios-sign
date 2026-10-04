@@ -1,0 +1,43 @@
+name: Deploy Cloudflare Worker
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    
+    steps:
+      # 1. 檢出專案原始碼
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # 2. 安裝並設定 Bun 執行環境
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      # 3. 構建並測試核心庫 (Root)
+      - name: Build and Test Core Library
+        run: |
+          bun install
+          bun run build
+          bun test
+
+      # 4. 構建 React 前端應用 (app/)
+      - name: Build Frontend Application
+        run: |
+          cd app
+          bun install
+          bun run build
+
+      # 5. 構建 Cloudflare Worker 後端 (backend/)
+      - name: Build Backend Worker
+        run: |
+          cd backend
+          bun install
+          bun run build
