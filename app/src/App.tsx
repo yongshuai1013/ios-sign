@@ -1028,6 +1028,7 @@ export function App() {
             onInstall={handleInstall}
             installBusy={busy.install}
             installDisabled={installDisabled}
+            signedFile={prepared?.file ?? null}
           />
         )}
       </section>
