@@ -30,6 +30,8 @@ interface SignPageProps {
   onInstall: () => void;
   installBusy: boolean;
   installDisabled: boolean;
+
+  signedFile: File | null;
 }
 
 function accountKey(s: StoredAccountSummary): string {
@@ -56,7 +58,20 @@ export function SignPage({
   onInstall,
   installBusy,
   installDisabled,
+  signedFile,
 }: SignPageProps) {
+  const handleDownload = () => {
+    if (!signedFile) return;
+    const url = URL.createObjectURL(signedFile);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = signedFile.name;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
   return (
     <section className="space-y-6 anim-in">
       <div>
@@ -130,6 +145,16 @@ export function SignPage({
         >
           Install Signed IPA
         </Button>
+        {signedFile && (
+          <Button
+            variant="ghost"
+            onClick={handleDownload}
+            className="min-w-[160px]"
+            title="下載簽名後的 IPA 文件"
+          >
+            Download IPA
+          </Button>
+        )}
       </div>
     </section>
   );
