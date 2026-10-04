@@ -22,7 +22,10 @@ jobs:
           node-version: '20'
 
       - name: Install deps
-        run: cd app && npm install
+        run: |
+          cd app && npm install
+          # 讓倉庫根 src/pairing 下的文件也能解析到 app/node_modules
+          ln -sfn "$PWD/node_modules" "$GITHUB_WORKSPACE/node_modules"
 
       - name: Build
         run: cd app && npx vite build
