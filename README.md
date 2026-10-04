@@ -72,3 +72,4 @@ XML plist，主要欄位：`public_key`、`private_key`（Ed25519）、`identifi
 - **SMS 2FA**：altsign.js 只支援信任裝置流程，SMS 會明確報錯。
 - 無真機 / 無真實 Apple ID 憑證：Apple 登入、2FA、配對、IPA 簽名安裝
   僅通過型別檢查、API 簽名核對與單元測試，**未做端到端真實驗證**。
+
