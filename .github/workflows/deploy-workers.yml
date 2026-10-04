@@ -19,12 +19,6 @@ jobs:
       - name: Install backend deps
         run: cd backend && bun install --ignore-scripts
 
-      - name: Install frontend deps
-        run: cd app && bun install --ignore-scripts
-
-      - name: Build frontend
-        run: cd app && bunx vite build
-
       - name: Deploy to Workers
         uses: cloudflare/wrangler-action@v4
         with:
