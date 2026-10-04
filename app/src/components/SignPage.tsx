@@ -145,16 +145,15 @@ export function SignPage({
         >
           Install Signed IPA
         </Button>
-        {signedFile && (
-          <Button
-            variant="ghost"
-            onClick={handleDownload}
-            className="min-w-[160px]"
-            title="下載簽名後的 IPA 文件"
-          >
-            Download IPA
-          </Button>
-        )}
+        <Button
+          variant="ghost"
+          onClick={handleDownload}
+          className="min-w-[160px]"
+          title="下載簽名後的 IPA 文件"
+          disabled={!signedFile}
+        >
+          Download IPA
+        </Button>
       </div>
     </section>
   );
